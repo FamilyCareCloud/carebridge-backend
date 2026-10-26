@@ -5,13 +5,16 @@ import { HandoffService } from './services/handoff.js';
 import { ApprovalService } from './services/approvals.js';
 import { LocalAnalysisService } from './services/bedrock.js';
 import { LocalSttService } from './adapters/stt.js';
+import { createCarebridgeClient } from './adapters/carebridge.js';
+import { CarebridgeService } from './services/carebridge.js';
 import { fail, fields, text, base64Audio, dayInSeoul, dateScope, sortBy } from './domain.js';
 import { CareGroupRepository, UserRepository } from './repositories/index.js';
 
 const MAX_AUDIO_BYTES = Number(process.env.AUDIO_MAX_BYTES) || 4 * 1024 * 1024;
 
-export function createApp(store, { clock = () => new Date().toISOString(), ai = new LocalAnalysisService(), stt = new LocalSttService(), auth: suppliedAuth } = {}) {
+export function createApp(store, { clock = () => new Date().toISOString(), ai = new LocalAnalysisService(), stt = new LocalSttService(), auth: suppliedAuth, carebridge = createCarebridgeClient() } = {}) {
   const auth = suppliedAuth ?? new AuthService(store, clock);
+  const bridge = new CarebridgeService(store, clock, carebridge);
   const answerQuestion = async (userId, groupId, question) => store.transaction(async tx => {
     const { group } = await new CareGroupRepository(tx).forMember(groupId, userId);
     if (/취소|변경|안\s*갈/.test(question)) return { mode: 'database', answer: '일정을 선택해 승인 요청을 등록해주세요.', sources: [], requiresApproval: true };
@@ -34,7 +37,7 @@ export function createApp(store, { clock = () => new Date().toISOString(), ai = 
       const url = new URL(path, 'http://localhost');
       const parts = url.pathname.split('/').filter(Boolean);
       let result, status = 200;
-      if (url.pathname === '/health' && method === 'GET') return { status: 200, body: { status: 'ok' } };
+      if (url.pathname === '/health' && method === 'GET') return { status: 200, body: { status: 'ok', carebridge: { schema: 'carebridge.workflow.v1', aiConfigured: Boolean(carebridge.enabled) } } };
       if (parts[0] === 'auth' && parts.length === 2 && method === 'POST' && ['register', 'login', 'confirm', 'resend-confirmation'].includes(parts[1])) {
         if (parts[1] === 'confirm' && !auth.confirm) fail(404, '로컬 인증은 별도 확인 코드가 없습니다.');
         if (parts[1] === 'resend-confirmation' && !auth.resend) fail(400, '로컬 인증은 이메일을 발송하지 않습니다.', 'EMAIL_VERIFICATION_NOT_SUPPORTED');
@@ -44,6 +47,7 @@ export function createApp(store, { clock = () => new Date().toISOString(), ai = 
         if (url.pathname === '/auth/logout' && method === 'POST') { fields(body, []); result = await auth.logout(token); }
         else if (url.pathname === '/me' && ['GET', 'PATCH'].includes(method)) result = await auth.profile(userId, method, body, token);
         else if (url.pathname === '/invitations/accept' && method === 'POST') result = await groups.accept(userId, body);
+        else if (parts[0] === 'groups' && parts[2] === 'carebridge') return await bridge.handle(userId, parts[1], method, parts.slice(3), body, url.searchParams);
         else if (parts[0] === 'groups' && parts.length <= 5) {
           const [, groupId, resource, id, action] = parts;
           if (parts.length === 1 && ['GET', 'POST'].includes(method)) { result = await groups.execute(userId, method, null, null, null, body); status = method === 'POST' ? 201 : 200; }

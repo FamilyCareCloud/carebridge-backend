@@ -65,6 +65,8 @@ jobs:
           ARTIFACT_BUCKET: ${{ vars.SAM_ARTIFACT_BUCKET }}
           SES_IDENTITY_ARN: ${{ vars.SES_IDENTITY_ARN }}
           AUTH_FROM_EMAIL: ${{ vars.AUTH_FROM_EMAIL }}
+          CAREBRIDGE_SERVICE_URL: ${{ vars.CAREBRIDGE_SERVICE_URL }}
+          CAREBRIDGE_SERVICE_API_KEY: ${{ secrets.CAREBRIDGE_SERVICE_API_KEY }}
           STT_SERVICE_URL: ${{ vars.STT_SERVICE_URL }}
           STT_SERVICE_API_KEY: ${{ secrets.STT_SERVICE_API_KEY }}
         run: |
@@ -80,7 +82,7 @@ jobs:
             --stack-name "$STACK_NAME" --region "$AWS_REGION" \
             --s3-bucket "$ARTIFACT_BUCKET" --s3-prefix fcc-backend-dev \
             --capabilities CAPABILITY_IAM \
-            --parameter-overrides "FrontendOrigin=$FRONTEND_ORIGIN" "SttServiceUrl=$STT_SERVICE_URL" "SttServiceApiKey=$STT_SERVICE_API_KEY" "${EMAIL_PARAMETERS[@]}" \
+            --parameter-overrides "FrontendOrigin=$FRONTEND_ORIGIN" "SttServiceUrl=$STT_SERVICE_URL" "SttServiceApiKey=$STT_SERVICE_API_KEY" "CarebridgeServiceUrl=$CAREBRIDGE_SERVICE_URL" "CarebridgeServiceApiKey=$CAREBRIDGE_SERVICE_API_KEY" "${EMAIL_PARAMETERS[@]}" \
             --no-confirm-changeset --no-fail-on-empty-changeset
       - name: Check public API and browser access
         run: |

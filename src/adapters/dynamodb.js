@@ -3,7 +3,7 @@ import { fail } from '../domain.js';
 // Reads are strongly consistent; writes check every read version, including deletions.
 export class DynamoStore {
   constructor({ client, tableName, commands }) { this.client = client; this.tableName = tableName; this.commands = commands; }
-  async transaction(action) {
+  async transaction(action, { validateReads = false } = {}) {
     const loaded = new Map(), changes = new Map();
     const get = async key => {
       if (changes.has(key)) return structuredClone(changes.get(key));
@@ -17,7 +17,7 @@ export class DynamoStore {
       if (Buffer.byteLength(JSON.stringify(data)) > 350000) fail(413, '데이터 저장 한도를 초과했습니다. 그룹 기록 분할이 필요합니다.', 'RECORD_LIMIT');
       await get(key); changes.set(key, structuredClone(data));
     }, delete: async key => { await get(key); changes.set(key, null); } });
-    if (!changes.size) return result;
+    if (!changes.size && (!validateReads || !loaded.size)) return result;
     if (loaded.size > 100) fail(413, '한 번에 변경하는 데이터가 너무 많습니다.');
     const items = [];
     for (const [key, item] of loaded) {

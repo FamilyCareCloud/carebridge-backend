@@ -23,6 +23,21 @@ Parameters:
     Type: String
     Default: ''
     Description: IAM ARN for the same regional foundation model (cross-region profiles need additional IAM configuration)
+  CarebridgeServiceUrl:
+    Type: String
+    Default: ''
+    Description: Authenticated CareBridge GPU service URL
+  CarebridgeServiceApiKey:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: Shared X-API-Key for CareBridge
+  CarebridgeTimeoutMs:
+    Type: Number
+    Default: 22000
+    MinValue: 1000
+    MaxValue: 24000
+    Description: AI call timeout below the Lambda budget
 Conditions:
   HasCustomEmail: !Not [!Equals [!Ref SesIdentityArn, '']]
   HasModel: !Not [!Equals [!Ref BedrockModelId, '']]
@@ -148,6 +163,9 @@ Resources:
           DYNAMODB_TABLE: !Ref Database
           COGNITO_CLIENT_ID: !Ref UserPoolClient
           COGNITO_USER_POOL_ID: !Ref UserPool
+          CAREBRIDGE_SERVICE_URL: !Ref CarebridgeServiceUrl
+          CAREBRIDGE_SERVICE_API_KEY: !Ref CarebridgeServiceApiKey
+          CAREBRIDGE_TIMEOUT_MS: !Ref CarebridgeTimeoutMs
           AI_PROVIDER: !If [HasModel, bedrock, local]
           BEDROCK_MODEL_ID: !Ref BedrockModelId
       Policies:
