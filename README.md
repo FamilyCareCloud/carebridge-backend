@@ -1,5 +1,7 @@
 # Family Care Cloud backend v0.2
 
+`test` 브랜치의 테스트 계정 로그인·실행 방법은 [TEST_ACCOUNT.md](docs/TEST_ACCOUNT.md), 아이디·비밀번호는 [test-account.json](config/test-account.json)을 참고하세요.
+
 CareBridge 기관 업무 v1 로컬 구현은 [WORKSPACE_API.md](docs/WORKSPACE_API.md)를 참고하세요. 고정 역할 가입, 기관 참여 승인, 대상자 순번, 독립 제출·검토, 수신자 지정 공개, 로컬 SSE 계약을 제공합니다. 기존 FCC 가족 그룹과 데이터·권한을 분리하며 미결정 정책은 명시적 설정을 요구합니다.
 
 2026-09-10 설계서 v1.00의 보호자 중심 MVP 백엔드입니다. 가입 → 그룹 생성 → 고령자 등록 → 가족 초대/참여 → 기록 작성 → 일정 관리 → 교대/인수인계 → 인수 확인 흐름을 제공합니다.

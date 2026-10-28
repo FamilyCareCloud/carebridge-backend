@@ -58,8 +58,14 @@ export function createApp(store, { clock = () => new Date().toISOString(), ai = 
           if (method !== 'GET') notifications.emit('invalidate', parts[1]);
           return response;
         }
+        if (url.pathname === '/auth/test-role' && method === 'POST') {
+          if (!auth.selectTestRole) fail(403, '테스트 계정이 비활성 상태입니다.');
+          const user = await auth.selectTestRole(userId, body);
+          notifications.emit('invalidate', null);
+          return { status: 200, body: user };
+        }
         const workspaceAccount = await store.transaction(tx => tx.get(`user#${userId}`));
-        if (workspaceAccount?.workspaceRole && !['/me', '/auth/logout'].includes(url.pathname)) fail(403, '기관 계정은 작업 그룹 API를 사용해 주세요.');
+        if ((workspaceAccount?.workspaceRole || workspaceAccount?.isTestAdmin) && !['/me', '/auth/logout'].includes(url.pathname)) fail(403, '기관 계정은 작업 그룹 API를 사용해 주세요.');
         if (url.pathname === '/auth/logout' && method === 'POST') { fields(body, []); result = await auth.logout(token); notifications.emit('invalidate', null); }
         else if (url.pathname === '/me' && ['GET', 'PATCH'].includes(method)) result = await auth.profile(userId, method, body, token);
         else if (url.pathname === '/invitations/accept' && method === 'POST') result = await groups.accept(userId, body);

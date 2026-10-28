@@ -127,7 +127,7 @@ Cognito는 가입 성공의 UserSub에 역할을 서버 저장하고, 인증 후
 | CAREBRIDGE_CONFIRMATION_ENABLED | false. true로 설정해도 최신 최종본 의미 QA 통과가 필수(D10) |
 | CAREBRIDGE_RECIPIENT_CHANGE | 미설정. 공개 중 수신자 변경은 POLICY_REQUIRED. `block_all`은 모두 차단 후 재공개, `retain`은 유지 수신자 권한만 유지(D06) |
 
-테스트 계정 생성·전용 로그인·역할 전환 예외는 제공하지 않는다.
+기능 브랜치에서는 테스트 계정 예외를 제공하지 않는다. `test` 브랜치 전용 구현은 [TEST_ACCOUNT.md](TEST_ACCOUNT.md)를 참고한다.
 
 D01 실제 정보 AI 처리, D02 기존 계정 이전, D08 대상자 변경, D09 자동 저장·복구, D11 퇴출 후 재가입, D12 음성 출시 범위는 미확정이다. 현재 지원하지 않는 동작을 자동 허용하지 않는다. 초안 생성본은 원문 연결용으로 저장하지만 작성 중 자동 저장 완료를 의미하지 않는다. 사용자 역할·원문을 재분류하거나 실데이터를 synthetic으로 속여 전송하지 않는다.
 

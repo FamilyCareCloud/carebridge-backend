@@ -22,21 +22,22 @@ export class WorkspaceService {
   async user(tx, userId) {
     const user = await tx.get(`user#${userId}`);
     if (!user) fail(401, '로그인이 필요합니다.');
-    if (!workspaceRoles.includes(user.workspaceRole)) fail(403, '기존 계정 역할 배정이 필요합니다.', 'ROLE_ASSIGNMENT_REQUIRED');
+    if (!workspaceRoles.includes(user.workspaceRole) && !user.isTestAdmin) fail(403, '기존 계정 역할 배정이 필요합니다.', 'ROLE_ASSIGNMENT_REQUIRED');
     return user;
   }
   async access(tx, userId, id, roles) {
     const user = await this.user(tx, userId), w = await tx.get(key(id));
     if (!w) notFound();
     const member = w.members.find(m => m.userId === userId && m.status === 'active');
-    const role = w.ownerReviewerId === userId ? 'reviewer' : member?.role;
+    const testRole = user.isTestAdmin && user.qaWorkspaceIds?.includes(id) ? user.qaRole : null;
+    const role = testRole ?? (w.ownerReviewerId === userId ? 'reviewer' : member?.role);
     if (!role) notFound();
     if (roles && !roles.includes(role)) fail(403, '이 작업에 필요한 역할이 아닙니다.');
     return { w, user, role };
   }
   async save(tx, w, actor, action, resourceId) {
     w.revision++;
-    w.audit.push({ actorId: actor.userId, role: actor.workspaceRole, action, resourceId, at: this.clock(), revision: w.revision });
+    w.audit.push({ actorId: actor.userId, role: actor.isTestAdmin ? actor.qaRole : actor.workspaceRole, action, resourceId, at: this.clock(), revision: w.revision });
     await tx.set(key(w.workspaceId), w);
   }
   async addIndex(tx, userId, id) {
@@ -67,9 +68,9 @@ export class WorkspaceService {
         w.transfers ??= [];
         if (!itemId && method === 'POST') {
           reviewer(); fields(body, ['expectedVersion', 'targetUserId']); version(body.expectedVersion, w.revision);
-          if (w.ownerReviewerId !== userId) fail(403, '정식 담당자만 이전을 시작할 수 있습니다.');
+          if (user.isTestAdmin || w.ownerReviewerId !== userId) fail(403, '정식 담당자만 이전을 시작할 수 있습니다.');
           const target = await this.user(tx, body.targetUserId);
-          if (target.workspaceRole !== 'reviewer' || target.userId === userId) fail(400, '다른 2그룹 계정을 지정해 주세요.');
+          if (target.workspaceRole !== 'reviewer' || target.userId === userId || target.isTestAdmin) fail(400, '다른 2그룹 계정을 지정해 주세요.');
           if (w.transfers.some(t => t.status === 'pending')) fail(409, '진행 중인 이전이 있습니다.');
           const t = { transferId: randomUUID(), fromUserId: userId, targetUserId: target.userId, status: 'pending', startedAt: this.clock(), version: 1 };
           w.transfers.push(t); await this.addIndex(tx, target.userId, id); await this.save(tx, w, user, 'start-transfer', t.transferId); return t;
@@ -219,7 +220,7 @@ export class WorkspaceService {
     return this.store.transaction(async tx => {
       const user = await this.user(tx, userId), index = await tx.get(indexKey(userId));
       const items = [];
-      for (const id of new Set(index?.workspaceIds ?? [])) {
+      for (const id of new Set([...(index?.workspaceIds ?? []), ...(user.isTestAdmin ? user.qaWorkspaceIds ?? [] : [])])) {
         const w = await tx.get(key(id)); if (!w) continue;
         const member = w.members.find(m => m.userId === userId), request = w.requests.filter(r => r.userId === userId).at(-1);
         const transfers = w.transfers?.filter(t => t.targetUserId === userId && t.status === 'pending') ?? [];
@@ -251,7 +252,7 @@ export class WorkspaceService {
     return this.store.transaction(async tx => {
       const user = await this.user(tx, userId), w = await tx.get(key(id));
       const t = w?.transfers?.find(t => t.transferId === transferId) ?? notFound();
-      if (t.targetUserId !== userId || user.workspaceRole !== 'reviewer') notFound();
+      if (t.targetUserId !== userId || user.workspaceRole !== 'reviewer' || user.isTestAdmin) notFound();
       version(body.expectedVersion, t.version);
       if (t.status !== 'pending' || w.ownerReviewerId !== t.fromUserId) fail(409, '유효하지 않은 이전입니다.');
       const index = await tx.get(indexKey(userId));
