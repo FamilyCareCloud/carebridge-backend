@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { fail, fields, text, choice } from '../domain.js';
 import { hash, evidenceSegments, validateDraft, validateReview } from '../carebridge-contract.js';
+import { requireDeployedAdmin } from './deployed-admin.js';
 
 export const workspaceRoles = ['author', 'reviewer', 'viewer'];
 const key = id => `workspace#${id}`;
@@ -22,11 +23,13 @@ export class WorkspaceService {
   async user(tx, userId) {
     const user = await tx.get(`user#${userId}`);
     if (!user) fail(401, '로그인이 필요합니다.');
+    if (user.deployedTestAdmin) return requireDeployedAdmin(tx, user);
     if (!workspaceRoles.includes(user.workspaceRole) && !user.isTestAdmin) fail(403, '기존 계정 역할 배정이 필요합니다.', 'ROLE_ASSIGNMENT_REQUIRED');
     return user;
   }
   async access(tx, userId, id, roles) {
     const user = await this.user(tx, userId), w = await tx.get(key(id));
+    if (user.deployedTestAdmin && !user.qaWorkspaceIds.includes(id)) notFound();
     if (!w) notFound();
     const member = w.members.find(m => m.userId === userId && m.status === 'active');
     const testRole = user.isTestAdmin && user.qaWorkspaceIds?.includes(id) ? user.qaRole : null;
@@ -276,6 +279,7 @@ export class WorkspaceService {
       const user = await this.user(tx, userId), index = await tx.get(indexKey(userId));
       const items = [];
       for (const id of new Set([...(index?.workspaceIds ?? []), ...(user.isTestAdmin ? user.qaWorkspaceIds ?? [] : [])])) {
+        if (user.deployedTestAdmin && !user.qaWorkspaceIds.includes(id)) continue;
         const w = await tx.get(key(id)); if (!w) continue;
         const member = w.members.find(m => m.userId === userId), request = w.requests.filter(r => r.userId === userId).at(-1);
         const transfers = w.transfers?.filter(t => t.targetUserId === userId && t.status === 'pending') ?? [];
