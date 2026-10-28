@@ -83,18 +83,20 @@ AI 호출이 실패하면 요청을 고정 저장하지 않으므로 같은 ID�
 
 ## 로컬 실행
 
-fcc-ai, fcc-backend, fcc-frontend를 같은 부모 폴더에 둔다.
+carebridge-ai, carebridge-backend, fcc-frontend를 같은 부모 폴더에 둔다.
+실행 스크립트는 carebridge-ai를 우선 선택하고, 없으면 이전 fcc-ai 폴더를 확인한다.
+AI qa.v2가 필요하며 적용 순서는 [FIDELITY_V2.md](FIDELITY_V2.md)를 따른다.
 AI는 GPU PR과 전사 API까지 포함한 버전을 사용해야 한다.
 
 ```powershell
-# fcc-ai: CUDA 환경 준비 후
+# carebridge-ai: CUDA 환경 준비 후
 .\.venv\Scripts\python.exe -m pip install -r requirements-gpu.txt
 # models/whisper-senior-lora 어댑터 배치, Qwen 체크포인트 캐시
-# fcc-backend
+# carebridge-backend
 pnpm install --frozen-lockfile --ignore-scripts
 # fcc-frontend
 npm ci
-# fcc-backend에서 세 서비스 실행
+# carebridge-backend에서 세 서비스 실행
 .\scripts\start-carebridge-local.ps1
 ```
 

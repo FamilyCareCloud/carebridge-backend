@@ -6,8 +6,65 @@ import { Store } from '../src/store.js';
 import { hash, evidenceSegments } from '../src/carebridge-contract.js';
 import { CarebridgeClient } from '../src/adapters/carebridge.js';
 
-const codes=['SOURCE_INTEGRITY','SOURCE_COVERAGE','EVIDENCE_PRESERVED','TRANSLATION_CONSISTENCY','OBSERVATION_GROUNDING','NUMERIC_FACTS_PRESERVED','NEGATION_SIGNAL_PRESERVED','UNCERTAINTY_SIGNAL_PRESERVED','FOLLOW_UP_GROUNDING','NO_IDENTIFIERS_DETECTED','NO_MEDICAL_JUDGMENT','NO_INSTRUCTIONS','SHARING_BLOCKED'];
-const semantic=['SEMANTIC_NEGATION','SEMANTIC_UNCERTAINTY','SEMANTIC_ADDED_FACTS','SEMANTIC_MEDICAL'];
+const codes=['SOURCE_INTEGRITY','SOURCE_COVERAGE','EVIDENCE_PRESERVED','TRANSLATION_CONSISTENCY','OBSERVATION_GROUNDING','NUMERIC_FACTS_PRESERVED','ASSISTANCE_FACT_PRESERVED','NEGATION_SIGNAL_PRESERVED','UNCERTAINTY_SIGNAL_PRESERVED','FOLLOW_UP_GROUNDING','NO_IDENTIFIERS_DETECTED','NO_MEDICAL_JUDGMENT','NO_INSTRUCTIONS','SHARING_BLOCKED'];
+const semantic=['SEMANTIC_NEGATION','SEMANTIC_UNCERTAINTY','SEMANTIC_ADDED_FACTS','SEMANTIC_MEDICAL','SEMANTIC_OMITTED_FACTS'];
+function reviewed(draft) {
+  return {status:'review_required',model_checked:true,segments:draft.translation.segments.map(t=>({evidence:t.evidence,checks:semantic.map(code=>({code,passed:true}))})),qa:qa(false,true)};
+}
+
+test('새 사실 누락 검사가 실패하면 승인과 가족 열람을 차단',async()=>{
+  const f=await fixture(),n=(await f.create()).body;
+  f.ai.qa=async draft=>{
+    const result=reviewed(draft); result.status='hold';
+    result.segments[0].checks.find(c=>c.code==='SEMANTIC_OMITTED_FACTS').passed=false;
+    result.qa.checks.find(c=>c.code==='SEMANTIC_OMITTED_FACTS').passed=false;
+    result.qa.issues.push({code:'SEMANTIC_OMITTED_FACTS',severity:'hold',message:'원문 사실 누락'});
+    return result;
+  };
+  assert.equal((await f.decide(n)).status,409);
+  assert.equal((await f.call(f.family,'GET',f.p+'/notes/'+n.id+'/preview')).status,409);
+  const unchanged=await f.call(f.reviewer,'GET',f.p+'/notes/'+n.id);
+  assert.equal(unchanged.body.version,n.version);
+  assert.equal(unchanged.body.approvedVersion,null);
+});
+
+test('구간 누락·근거 변조·검사 누락·불리언/집계 위조를 승인 전에 거부',async()=>{
+  const mutations=[
+    r=>r.segments.pop(),
+    r=>r.segments.reverse(),
+    r=>{r.segments[0].evidence.quote='다른 원문';},
+    r=>r.segments[0].checks.pop(),
+    r=>{r.segments[0].checks[0]=null;},
+    r=>{r.segments[0].checks[0].passed='true';},
+    r=>{r.segments[0].checks[0].passed=false;},
+    r=>{r.segments[0].checks[0]=r.segments[0].checks[1];},
+    r=>{r.qa.checks=r.qa.checks.filter(c=>c.code!=='SEMANTIC_OMITTED_FACTS');},
+    r=>{r.qa.checks=r.qa.checks.filter(c=>c.code!=='ASSISTANCE_FACT_PRESERVED');},
+  ];
+  for(const mutate of mutations){
+    const f=await fixture(),n=(await f.create()).body;
+    f.ai.qa=async draft=>{const r=reviewed(structuredClone(draft));mutate(r);return r;};
+    const response=await f.decide(n);
+    assert.equal(response.status,502,JSON.stringify(response));
+    assert.equal((await f.call(f.reviewer,'GET',f.p+'/notes/'+n.id)).body.version,n.version);
+  }
+});
+
+test('이전 승인본에 새 필수 검사가 없으면 재검사·재승인 후 열람',async()=>{
+  const f=await fixture(),n=(await f.create()).body,approved=(await f.decide(n)).body;
+  await f.store.transaction(async tx=>{
+    const key='carebridge-version#'+f.g.id+'#'+n.id+'#'+approved.version;
+    const snapshot=await tx.get(key);
+    snapshot.draft.qa.checks=snapshot.draft.qa.checks.filter(c=>c.code!=='SEMANTIC_OMITTED_FACTS');
+    await tx.set(key,snapshot);
+  });
+  const blocked=await f.call(f.family,'GET',f.p+'/notes/'+n.id+'/preview');
+  assert.equal(blocked.status,409);assert.equal(blocked.body.code,'CAREBRIDGE_RECHECK_REQUIRED');
+  const checked=await f.call(f.reviewer,'POST',f.p+'/notes/'+n.id+'/check',{expectedVersion:approved.version});
+  assert.equal(checked.status,200);
+  assert.equal((await f.decide(checked.body)).status,200);
+  assert.equal((await f.call(f.family,'GET',f.p+'/notes/'+n.id+'/preview')).status,200);
+});
 function qa(hold=false,withSemantic=false) {
   return {checks:[...codes,...(withSemantic?semantic:[])].map(code=>({code,passed:!hold||code!=='NUMERIC_FACTS_PRESERVED'})),issues:[{code:'HUMAN_REVIEW_REQUIRED',severity:'review',message:'사람 검토 필수'},...(hold?[{code:'NUMERIC_FACTS_PRESERVED',severity:'hold',message:'숫자 확인'}]:[])],requires_human_review:true,external_share_allowed:false};
 }
@@ -19,7 +76,7 @@ async function fixture(options={}) {
   const store=new Store(), calls={draft:0,qa:0,transcribe:0};
   const ai={enabled:true,
     draft:async input=>{calls.draft++;return makeDraft(input.memo);},
-    qa:async()=>{calls.qa++;return {status:'review_required',model_checked:true,segments:[],qa:qa(false,true)};},
+    qa:async draft=>{calls.qa++;return reviewed(draft);},
     transcribe:async()=>{calls.transcribe++;return {text:'아침 식사를 절반 드셨습니다.',requires_transcript_review:true};},
     ...options,
   };
@@ -107,7 +164,7 @@ test('원문 구간·추가필드·AI 승인/공유 우회와 잘린 검사 결�
 });
 test('QA 보류·모델 장애는 승인으로 바뀌지 않으며 수동 보류는 AI 장애 중에도 가능',async()=>{
   const f=await fixture(),n=(await f.create()).body;
-  f.ai.qa=async()=>({status:'hold',model_checked:false,qa:qa(true)});
+  f.ai.qa=async()=>({status:'hold',model_checked:false,segments:[],qa:qa(true)});
   assert.equal((await f.decide(n)).status,409);
   f.ai.qa=async()=>{throw Object.assign(new Error('장애'),{status:503});};
   assert.equal((await f.decide(n)).status,503);
@@ -118,7 +175,7 @@ test('동시 수정과 승인 경쟁은 최신 버전만 성공, 승인 중 역�
   const f=await fixture(),n=(await f.create()).body;
   let entered,release;
   const reached=new Promise(r=>entered=r), gate=new Promise(r=>release=r);
-  f.ai.qa=async()=>{entered();await gate;return {status:'review_required',model_checked:true,qa:qa(false,true)};};
+  f.ai.qa=async draft=>{entered();await gate;return reviewed(draft);};
   const pending=f.decide(n);await reached;
   const held=await f.decide(n,'hold');assert.equal(held.status,200);
   release();assert.equal((await pending).status,409);
@@ -159,7 +216,7 @@ test('검사 도중 검토자 역할이 철회되면 최종 승인 저장을 거
   assert.equal((await f.call(f.reviewer,'PATCH',f.p+'/roles',{expectedVersion:1,userId:f.author.id,role:'reviewer'})).status,200);
   const own=await f.call(f.reviewer,'POST',f.p+'/notes',{memo:'식사를 하셨습니다.',dataUse:'synthetic_deidentified',requestId:randomUUID()});
   let entered,release; const reached=new Promise(r=>entered=r),gate=new Promise(r=>release=r);
-  f.ai.qa=async()=>{entered();await gate;return {status:'review_required',model_checked:true,qa:qa(false,true)};};
+  f.ai.qa=async draft=>{entered();await gate;return reviewed(draft);};
   const pending=f.call(f.author,'POST',f.p+'/notes/'+own.body.id+'/review',{expectedVersion:1,decision:'approve',reason:'원문 대조',confirmSource:true});
   await reached;
   assert.equal((await f.call(f.reviewer,'PATCH',f.p+'/roles',{expectedVersion:2,userId:f.author.id,role:'family'})).status,200);

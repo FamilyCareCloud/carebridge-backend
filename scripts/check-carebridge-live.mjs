@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import assert from 'node:assert/strict';
 
@@ -56,7 +56,7 @@ assert.equal(versions.length,5);
 const original=await send(author,'GET',root+'/notes/'+created.id+'/versions/1');
 assert.equal(original.draft.source.text,created.source.text);
 await send(family,'GET',root+'/notes/'+created.id+'/versions/1',undefined,403);check('immutable version history remains private');
-const audioPath=resolve('../fcc-ai/evaluation/synthetic-english.wav');
+const audioPath=resolve(process.env.CAREBRIDGE_TEST_AUDIO ?? (existsSync('../carebridge-ai')?'../carebridge-ai/evaluation/synthetic-english.wav':'../fcc-ai/evaluation/synthetic-english.wav'));
 const transcript=await send(author,'POST',root+'/transcriptions',{audioBase64:readFileSync(audioPath).toString('base64'),sourceLanguage:'en',dataUse:'synthetic_deidentified'});
 assert.equal(transcript.requiresTranscriptReview,true);check('real multilingual STT returns an editable transcript');
 report.noteId=created.id;report.groupId=group.id;report.allPassed=true;

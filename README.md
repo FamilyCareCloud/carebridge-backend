@@ -1,4 +1,7 @@
-# Family Care Cloud backend v0.2
+# CareBridge backend
+
+CareBridge 기능의 구현 기준 브랜치는 `develop`입니다.
+[사실 누락 검사·승인 검증·이관 후 실행 안내](docs/FIDELITY_V2.md)를 참고하세요.
 
 2026-09-10 설계서 v1.00의 보호자 중심 MVP 백엔드입니다. 가입 → 그룹 생성 → 고령자 등록 → 가족 초대/참여 → 기록 작성 → 일정 관리 → 교대/인수인계 → 인수 확인 흐름을 제공합니다.
 
