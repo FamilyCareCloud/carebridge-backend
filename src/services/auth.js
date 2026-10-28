@@ -1,7 +1,7 @@
 import { validatePassword } from './verification.js';
 import { randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual, createHash } from 'node:crypto';
 import { promisify } from 'node:util';
-import { email, text, fields, fail } from '../domain.js';
+import { email, text, fields, fail, choice } from '../domain.js';
 import { UserRepository } from '../repositories/index.js';
 const scrypt = promisify(scryptCallback);
 export const digest = token => createHash('sha256').update(token).digest('hex');
@@ -9,7 +9,8 @@ export const publicUser = ({ passwordHash, salt, groupIds, ...user }) => user;
 export class AuthService {
   constructor(store, clock) { this.store = store; this.clock = clock; }
   async register(body) {
-    fields(body, ['email', 'password', 'name']);
+    fields(body, ['email', 'password', 'name', 'role']);
+    const workspaceRole = body.role === undefined ? null : choice(body.role, ['author', 'reviewer', 'viewer'], 'role');
     const address = email(body.email), name = text(body.name, 'name', 100);
     validatePassword(body.password);
     const salt = randomBytes(16).toString('hex');
@@ -17,6 +18,7 @@ export class AuthService {
     return this.store.transaction(async tx => {
       if (await tx.get(`email#${address}`)) fail(409, '이미 가입된 이메일입니다.');
       const user = { userId: randomUUID(), name, email: address, role: 'caregiver', createdAt: this.clock(), groupIds: [], salt, passwordHash };
+      if (workspaceRole) { user.workspaceRole = workspaceRole; user.role = workspaceRole; }
       await new UserRepository(tx).save(user);
       await tx.set(`email#${address}`, { userId: user.userId });
       return publicUser(user);

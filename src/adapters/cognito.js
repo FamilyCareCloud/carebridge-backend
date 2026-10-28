@@ -1,4 +1,4 @@
-import { fields, email, text, fail } from '../domain.js';
+import { fields, email, text, fail, choice } from '../domain.js';
 import { UserRepository } from '../repositories/index.js';
 import { publicUser } from '../services/auth.js';
 import { validatePassword, authError, VerificationDelivery } from '../services/verification.js';
@@ -58,7 +58,8 @@ export class CognitoAuthService {
     }
   }
   async register(body) {
-    fields(body, ['name', 'email', 'password']);
+    fields(body, ['name', 'email', 'password', 'role']);
+    const workspaceRole = body.role === undefined ? null : choice(body.role, ['author', 'reviewer', 'viewer'], 'role');
     const address = email(body.email), name = text(body.name, 'name', 100);
     validatePassword(body.password);
     const existing = await this.account(address);
@@ -67,7 +68,9 @@ export class CognitoAuthService {
       throw authError(409, 'ACCOUNT_ALREADY_EXISTS', '이미 가입된 이메일입니다. 로그인해주세요.');
     }
     try {
-      return await this.deliver(address, 'SignUpCommand', { ClientId: this.clientId, Username: address, Password: body.password, UserAttributes: [{ Name: 'name', Value: name }, { Name: 'email', Value: address }] });
+      const result = await this.deliver(address, 'SignUpCommand', { ClientId: this.clientId, Username: address, Password: body.password, UserAttributes: [{ Name: 'name', Value: name }, { Name: 'email', Value: address }] });
+      if (workspaceRole && result.userId) await this.store.transaction(tx => tx.set(`workspace-signup#${result.userId}`, { role: workspaceRole }));
+      return result;
     } catch (error) {
       if (error.code === 'ACCOUNT_ALREADY_EXISTS') {
         const account = await this.account(address);
@@ -113,7 +116,10 @@ export class CognitoAuthService {
     if (!attributes.sub || attributes.email_verified !== 'true') fail(403, '이메일 인증이 필요합니다.', 'EMAIL_NOT_VERIFIED');
     await this.store.transaction(async tx => {
       const repo = new UserRepository(tx), existing = await repo.findById(attributes.sub);
-      if (!existing) await repo.save({ userId: attributes.sub, email: attributes.email.toLowerCase(), name: attributes.name ?? attributes.email, role: 'caregiver', createdAt: this.clock(), groupIds: [] });
+      if (!existing) {
+        const signup = await tx.get(`workspace-signup#${attributes.sub}`);
+        await repo.save({ userId: attributes.sub, email: attributes.email.toLowerCase(), name: attributes.name ?? attributes.email, role: signup?.role ?? 'caregiver', ...(signup ? { workspaceRole: signup.role } : {}), createdAt: this.clock(), groupIds: [] });
+      }
     });
     return attributes.sub;
   }

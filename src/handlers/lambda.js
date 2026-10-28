@@ -8,7 +8,7 @@ import { createSttService } from '../adapters/stt.js';
 const MAX_BODY = 65536;
 const MAX_CAREBRIDGE_BODY = 262144;
 const MAX_VOICE_BODY = Number(process.env.AUDIO_MAX_BYTES) || 4 * 1024 * 1024; // base64 오디오는 원본보다 커서 별도 상한 적용
-const isVoicePath = path => /^\/groups\/[^/]+\/(?:assistant\/voice|carebridge\/transcriptions)$/.test(path);
+const isVoicePath = path => /^(?:\/groups\/[^/]+\/(?:assistant\/voice|carebridge\/transcriptions)|\/workspaces\/[^/]+\/transcriptions)$/.test(path);
 export function createLambdaHandler(app) {
   return async event => {
     if (event.requestContext?.http?.method === 'OPTIONS') return { statusCode: 204, headers: { 'Cache-Control': 'no-store' }, body: '' };

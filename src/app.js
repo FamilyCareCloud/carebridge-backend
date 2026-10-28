@@ -7,14 +7,19 @@ import { LocalAnalysisService } from './services/bedrock.js';
 import { LocalSttService } from './adapters/stt.js';
 import { createCarebridgeClient } from './adapters/carebridge.js';
 import { CarebridgeService } from './services/carebridge.js';
+import { WorkspaceService } from './services/workspaces.js';
+import { EventEmitter } from 'node:events';
 import { fail, fields, text, base64Audio, dayInSeoul, dateScope, sortBy } from './domain.js';
 import { CareGroupRepository, UserRepository } from './repositories/index.js';
 
 const MAX_AUDIO_BYTES = Number(process.env.AUDIO_MAX_BYTES) || 4 * 1024 * 1024;
 
-export function createApp(store, { clock = () => new Date().toISOString(), ai = new LocalAnalysisService(), stt = new LocalSttService(), auth: suppliedAuth, carebridge = createCarebridgeClient() } = {}) {
+export function createApp(store, { clock = () => new Date().toISOString(), ai = new LocalAnalysisService(), stt = new LocalSttService(), auth: suppliedAuth, carebridge = createCarebridgeClient(), workspacePolicy = {} } = {}) {
   const auth = suppliedAuth ?? new AuthService(store, clock);
   const bridge = new CarebridgeService(store, clock, carebridge);
+  const workspaces = new WorkspaceService(store, clock, carebridge, workspacePolicy);
+  const notifications = new EventEmitter();
+  notifications.setMaxListeners(0);
   const answerQuestion = async (userId, groupId, question) => store.transaction(async tx => {
     const { group } = await new CareGroupRepository(tx).forMember(groupId, userId);
     if (/취소|변경|안\s*갈/.test(question)) return { mode: 'database', answer: '일정을 선택해 승인 요청을 등록해주세요.', sources: [], requiresApproval: true };
@@ -31,20 +36,31 @@ export function createApp(store, { clock = () => new Date().toISOString(), ai = 
     return { mode: 'database', answer: found.length ? found.slice(0, 5).map(s => `${s.title}: ${new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', dateStyle: 'full', timeStyle: 'short' }).format(new Date(s.scheduledAt))}`).join('\n') : none, sources: found.slice(0, 5).map(s => ({ scheduleId: s.id })) };
   });
   const groups = new CareGroupService(store, clock), events = new CareEventService(store, clock, ai), schedules = new ScheduleService(store, clock), handoffs = new HandoffService(store, clock, ai), approvals = new ApprovalService(store, clock);
-  return async function handle({ method, path, token, body = {} }) {
+  const handle = async function ({ method, path, token, body = {} }) {
     try {
       if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400, 'JSON 객체가 필요합니다.');
       const url = new URL(path, 'http://localhost');
       const parts = url.pathname.split('/').filter(Boolean);
       let result, status = 200;
       if (url.pathname === '/health' && method === 'GET') return { status: 200, body: { status: 'ok', carebridge: { schema: 'carebridge.workflow.v1', aiConfigured: Boolean(carebridge.enabled) } } };
+      if (url.pathname === '/workspace-auth/register' && method === 'POST') {
+        if (!['author', 'reviewer', 'viewer'].includes(body.role)) fail(400, '가입 역할을 선택해 주세요.');
+        return { status: 201, body: await auth.register(body) };
+      }
       if (parts[0] === 'auth' && parts.length === 2 && method === 'POST' && ['register', 'login', 'confirm', 'resend-confirmation'].includes(parts[1])) {
         if (parts[1] === 'confirm' && !auth.confirm) fail(404, '로컬 인증은 별도 확인 코드가 없습니다.');
         if (parts[1] === 'resend-confirmation' && !auth.resend) fail(400, '로컬 인증은 이메일을 발송하지 않습니다.', 'EMAIL_VERIFICATION_NOT_SUPPORTED');
         result = await auth[parts[1] === 'resend-confirmation' ? 'resend' : parts[1]](body); status = parts[1] === 'register' ? 201 : 200;
       } else {
         const userId = await auth.authenticate(token);
-        if (url.pathname === '/auth/logout' && method === 'POST') { fields(body, []); result = await auth.logout(token); }
+        if (parts[0] === 'workspaces') {
+          const response = await workspaces.handle(userId, method, parts.slice(1), body, url.searchParams);
+          if (method !== 'GET') notifications.emit('invalidate', parts[1]);
+          return response;
+        }
+        const workspaceAccount = await store.transaction(tx => tx.get(`user#${userId}`));
+        if (workspaceAccount?.workspaceRole && !['/me', '/auth/logout'].includes(url.pathname)) fail(403, '기관 계정은 작업 그룹 API를 사용해 주세요.');
+        if (url.pathname === '/auth/logout' && method === 'POST') { fields(body, []); result = await auth.logout(token); notifications.emit('invalidate', null); }
         else if (url.pathname === '/me' && ['GET', 'PATCH'].includes(method)) result = await auth.profile(userId, method, body, token);
         else if (url.pathname === '/invitations/accept' && method === 'POST') result = await groups.accept(userId, body);
         else if (parts[0] === 'groups' && parts[2] === 'carebridge') return await bridge.handle(userId, parts[1], method, parts.slice(3), body, url.searchParams);
@@ -78,4 +94,11 @@ export function createApp(store, { clock = () => new Date().toISOString(), ai = 
       return { status: error.status ?? 500, body: { error: error.status ? error.message : '서버 오류가 발생했습니다.', code: error.status ? error.code ?? 'REQUEST_ERROR' : 'INTERNAL_ERROR', ...(error.details ? { details: error.details } : {}) } };
     }
   };
+  // Local HTTP SSE subscribers receive only invalidation signals, never record content.
+  handle.subscribeWorkspace = (workspaceId, listener) => {
+    const callback = changedId => { if (!changedId || changedId === workspaceId) listener(); };
+    notifications.on('invalidate', callback);
+    return () => notifications.off('invalidate', callback);
+  };
+  return handle;
 }
