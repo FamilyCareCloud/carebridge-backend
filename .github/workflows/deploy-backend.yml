@@ -82,7 +82,7 @@ jobs:
             --stack-name "$STACK_NAME" --region "$AWS_REGION" \
             --s3-bucket "$ARTIFACT_BUCKET" --s3-prefix fcc-backend-dev \
             --capabilities CAPABILITY_IAM \
-            --parameter-overrides "FrontendOrigin=$FRONTEND_ORIGIN" "SttServiceUrl=$STT_SERVICE_URL" "SttServiceApiKey=$STT_SERVICE_API_KEY" "CarebridgeServiceUrl=$CAREBRIDGE_SERVICE_URL" "CarebridgeServiceApiKey=$CAREBRIDGE_SERVICE_API_KEY" "${EMAIL_PARAMETERS[@]}" \
+            --parameter-overrides "AppVersion=$GITHUB_SHA" "FrontendOrigin=$FRONTEND_ORIGIN" "SttServiceUrl=$STT_SERVICE_URL" "SttServiceApiKey=$STT_SERVICE_API_KEY" "CarebridgeServiceUrl=$CAREBRIDGE_SERVICE_URL" "CarebridgeServiceApiKey=$CAREBRIDGE_SERVICE_API_KEY" "${EMAIL_PARAMETERS[@]}" \
             --no-confirm-changeset --no-fail-on-empty-changeset
       - name: Check public API and browser access
         run: |
@@ -100,3 +100,4 @@ jobs:
           echo "### Backend deployed" >> "$GITHUB_STEP_SUMMARY"
           echo "Commit: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
           echo "API: $API_URL" >> "$GITHUB_STEP_SUMMARY"
+          aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='WebSocketUrl'].OutputValue | [0]" --output text >> "$GITHUB_STEP_SUMMARY"

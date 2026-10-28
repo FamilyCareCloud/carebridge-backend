@@ -1,5 +1,7 @@
 # CareBridge 기관 업무 API v1
 
+2026-10-29 연동 개정은 [INTEGRATION_2026-10-29.md](INTEGRATION_2026-10-29.md)가 우선한다. 확정 정책: 단일 기관, AI 경고가 있어도 확정 허용, 지정 QA admin 자기 검토 허용.
+
 2026-10-29. `CareBridge-기능명세서-v1.0.md` 및 `CareBridge-UseCase-v1.0.md` 기준 로컬 구현.
 기준 코드는 `origin/develop@03f667d`. 기존 FCC 데이터와 역할은 자동 이전하지 않는다.
 이 문서는 새 `/workspaces` 계약이며 `/groups/{id}/carebridge`의 기존 계약과 구분한다.
@@ -73,8 +75,8 @@ Cognito는 가입 성공의 UserSub에 역할을 서버 저장하고, 인증 후
 제출별 상태는 `review_pending / held / confirmed`이며 이전 제출을 자동 대체하지 않는다.
 보류 reason은 필수다. 검토의 content와 이력은 제출 원문·생성본을 덮어쓰지 않는다.
 
-확정은 원문·확인사항 확인 플래그, 최신 version, 최종 내용 해시와 연결된 QA 통과를 모두 요구한다. QA 장애·불완전 응답·hold는 확정하지 않는다. AI 원출력의 QA와 사람이 결정한 status는 별도 필드다.
-검토본을 edit로 저장 → check → confirm 순서다. 검사 후 edit하면 다시 검사한다. 본인 제출은 검토할 수 없다.
+확정은 원문·확인사항 확인 플래그, 최신 version, 최종 내용 해시와 연결된 유효한 QA 결과를 모두 요구한다. QA 장애·불완전 응답·미실행은 기존처럼 확정을 차단한다(P-03b 미결정). 유효한 검사 결과의 hold·미통과 경고는 보존하면서 확정할 수 있다. AI 원출력의 QA와 사람이 결정한 status는 별도 필드다.
+검토본을 edit로 저장 → check → confirm 순서다. 검사 후 edit하면 다시 검사한다. 일반 계정의 본인 제출은 검토할 수 없다. 지정 QA 범위의 admin은 자기 제출 검토·확정이 가능하다.
 현재 편집본 QA 연결은 생성 구간 수를 유지한 줄별 편집만 지원한다. 구간 추가·삭제는 `422 EDITED_EVIDENCE_REQUIRED`로 거절하고 D10 계약을 요구한다. 줄과 근거의 의미 대응은 외부 의미 QA가 검사하며, 실제 모델 평가 완료를 뜻하지 않는다. qa.v2 미병합 개선을 적용했다고 주장하지 않는다.
 
 ## 별도 공개
@@ -106,7 +108,7 @@ Cognito는 가입 성공의 UserSub에 역할을 서버 저장하고, 인증 후
 이벤트는 `{}`만 전송하고 업무 내용·타 수신자 ID를 포함하지 않는다. HTTP 서버는 성공한 변경 커밋 후 이벤트를 전달하며, 20초 주기로 세션도 재검증한다. 공개 철회는 변경 직후 이벤트로 알린다.
 새 API 조회는 모든 요청에서 권한을 검증하고 HTTP 응답은 no-store다.
 프론트의 탭 복귀·뒤로 가기·화면 복원 처리와 실제 화면 숨김은 별도 구현이 필요하다. 브라우저 두 탭 수용 검증이나 지연 SLA는 아직 실행·합의하지 않았다(D07).
-이 이벤트 버스는 **단일 프로세스 로컬 HTTP 전용**이다. API Gateway/Lambda에는 SSE 경로를 제공하지 않는다. 다중 인스턴스 배포 전 공유 이벤트 전송 계층이 필요하다. Lambda 환경에 이 구현을 그대로 배포해 실시간 철회가 완성됐다고 판단하지 않는다.
+이 SSE 이벤트 버스는 **단일 프로세스 로컬 HTTP 전용**이다. 배포 환경은 새 연동 문서의 WebSocket + DynamoDB Streams를 사용한다. API Gateway/Lambda에는 SSE 경로를 제공하지 않는다. 다중 인스턴스 배포 전 공유 이벤트 전송 계층이 필요하다. Lambda 환경에 이 구현을 그대로 배포해 실시간 철회가 완성됐다고 판단하지 않는다.
 
 ## 관리자 이전·미결정 설정
 
@@ -122,10 +124,10 @@ Cognito는 가입 성공의 UserSub에 역할을 서버 저장하고, 인증 후
 
 | 환경 변수 | 기본값·의미 |
 |---|---|
-| CAREBRIDGE_MULTIPLE_WORKSPACES | false. 복수 가입·생성은 D03 결정 전 POLICY_REQUIRED |
-| CAREBRIDGE_TRANSFER_ENABLED | false. true는 위 지정·수락·취소 방식을 로컬에서 평가할 때 사용(D04) |
-| CAREBRIDGE_CONFIRMATION_ENABLED | false. true로 설정해도 최신 최종본 의미 QA 통과가 필수(D10) |
-| CAREBRIDGE_RECIPIENT_CHANGE | 미설정. 공개 중 수신자 변경은 POLICY_REQUIRED. `block_all`은 모두 차단 후 재공개, `retain`은 유지 수신자 권한만 유지(D06) |
+| CAREBRIDGE_MULTIPLE_WORKSPACES | 항상 false. 활성 기관 중복은 SINGLE_WORKSPACE_REQUIRED |
+| CAREBRIDGE_TRANSFER_ENABLED | 기본 true. 현 userId 지정·수락·취소 방식 제공, 최종 대상 지정 UI는 P-04 미결정 |
+| CAREBRIDGE_CONFIRMATION_ENABLED | 기본 true. 현재 최종본의 유효한 QA 결과 필요. 경고는 차단 사유 아님 |
+| CAREBRIDGE_RECIPIENT_CHANGE | 배포·로컬 공통 block_all. 수신자 변경은 기존 공개 전체 차단 후 재공개 |
 
 기능 브랜치에서는 테스트 계정 예외를 제공하지 않는다. `test` 브랜치 전용 구현은 [TEST_ACCOUNT.md](TEST_ACCOUNT.md)를 참고한다.
 
@@ -136,4 +138,4 @@ D01 실제 정보 AI 처리, D02 기존 계정 이전, D08 대상자 변경, D09
 `node --test`로 기존 회귀 테스트와 `tests/workspaces.test.js`를 함께 실행한다. 새 테스트는 역할·기관 경계, 승인·거절·재요청, 동시 번호 할당, 독립 제출·멱등성·원문 해시, 보류·버전 충돌, 수신자 분리·정정·철회·퇴출, 담당자 이전, AI 장애·권한 변경 경합, 실제 로컬 HTTP SSE를 검증한다.
 AI 응답은 합성 모의 데이터다. 실제 GPU 전사·번역·의미 QA 품질, 실운영 Cognito/DynamoDB 연결, PC·모바일 화면은 검증하지 않았다.
 
-로컬 JSON Store와 기존 DynamoStore 트랜잭션 인터페이스를 사용한다. 작업 그룹 메타데이터·목록·검토·공개 이력은 단일 aggregate이며 기존 350KB 한도 도달 시 413으로 전체 변경을 롤백한다. 불변 제출·생성본은 별도 키로 보관한다. 운영 규모 확장에는 인덱스·이력 분할과 페이지네이션이 필요하다. 기존 데이터 초기화·배포·Git push는 실행하지 않는다.
+로컬 JSON Store와 기존 DynamoStore 트랜잭션 인터페이스를 사용한다. 작업 그룹 메타데이터·목록·검토·공개 이력은 단일 aggregate이며 기존 350KB 한도 도달 시 413으로 전체 변경을 롤백한다. 불변 제출·생성본은 별도 키로 보관한다. 운영 규모 확장에는 인덱스·이력 분할과 페이지네이션이 필요하다. 기존 데이터를 초기화하지 않는다. 실제 배포·외부 모델 검증 여부는 개정 연동 문서에 구분한다.

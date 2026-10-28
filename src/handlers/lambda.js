@@ -4,6 +4,8 @@ import { createCognitoAuth } from '../adapters/cognito.js';
 import { createAnalysisService } from '../services/bedrock.js';
 import { createCarebridgeClient } from '../adapters/carebridge.js';
 import { createSttService } from '../adapters/stt.js';
+import { workspacePolicy } from '../workspace-policy.js';
+import { RealtimeService } from '../services/realtime.js';
 
 const MAX_BODY = 65536;
 const MAX_CAREBRIDGE_BODY = 262144;
@@ -26,7 +28,7 @@ let appPromise;
 export async function handler(event) {
   appPromise ??= (async () => {
     const store = await createDynamoStore(), clock = () => new Date().toISOString();
-    return createApp(store, { clock, auth: await createCognitoAuth(store, clock), ai: await createAnalysisService(), stt: createSttService(), carebridge: createCarebridgeClient() });
+    return createApp(store, { clock, auth: await createCognitoAuth(store, clock), ai: await createAnalysisService(), stt: createSttService(), carebridge: createCarebridgeClient(), workspacePolicy: workspacePolicy(), realtime: new RealtimeService(store,clock,{websocketUrl:process.env.WEBSOCKET_URL}) });
   })().catch(error => { appPromise = null; throw error; });
   try { return await createLambdaHandler(await appPromise)(event); }
   catch { return { statusCode: 503, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }, body: JSON.stringify({ error: '서비스 초기화에 실패했습니다.' }) }; }

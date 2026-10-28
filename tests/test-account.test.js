@@ -2,9 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/store.js';
 import { createApp } from '../src/app.js';
-import { prepareTestAccount, testAccount } from '../src/services/test-account.js';
+import { prepareTestAccount as prepare, testAccount as account } from '../src/services/test-account.js';
 import { WorkspaceService } from '../src/services/workspaces.js';
+import { seedQa } from '../scripts/seed-qa.js';
 
+const testAccount = {...account,password:'Synthetic!123'};
+const prepareTestAccount = (store,clock,env={}) => prepare(store,clock,{CAREBRIDGE_TEST_ADMIN_ENABLED:'true',CAREBRIDGE_TEST_ADMIN_PASSWORD:testAccount.password,...env});
 const clock = () => '2026-10-29T00:00:00.000Z';
 async function fixture() {
   const store = new Store(), auth = await prepareTestAccount(store, clock, {}), app = createApp(store, {clock,auth});
@@ -58,4 +61,18 @@ test('기존 QA 기관 지정 시 범위를 유지하고 잘못된 기관은 계
   const store = new Store();
   await assert.rejects(prepareTestAccount(store,clock,{CAREBRIDGE_QA_WORKSPACE_IDS:'missing'}),e=>e.status===400);
   assert.equal(await store.transaction(tx=>tx.get('test-admin#account')),null);
+});
+
+test('BE-06 admin 자기 제출 검토·확정 후 지정 QA 공개문 열람, 재실행 시 중복 seed 없음', async()=>{
+  const store=new Store(), env={CAREBRIDGE_TEST_ADMIN_ENABLED:'true',CAREBRIDGE_TEST_ADMIN_PASSWORD:testAccount.password};
+  const seeded=await seedQa(store,clock,env);assert.equal(seeded.fixture,true);
+  assert.deepEqual(await seedQa(store,clock,env),seeded);
+  const auth=await prepareTestAccount(store,clock,env), login=await auth.login({loginId:'admin',password:testAccount.password});
+  await auth.selectTestRole(login.user.userId,{role:'viewer'});
+  const app=createApp(store,{clock,auth});
+  const call=path=>app({method:'GET',path,token:login.accessToken});
+  const mine=await call('/workspaces');assert.equal(mine.body[0].status,'active');assert.equal(mine.body[0].testAccess,true);assert.equal(mine.body[0].role,'viewer');
+  const access=await call(`/workspaces/${seeded.workspaceId}/access`);assert.equal(access.body.role,'viewer');assert.equal(access.body.testAccess,true);
+  const published=await call(`/workspaces/${seeded.workspaceId}/publications/${seeded.publicationId}`);assert.equal(published.status,200);assert.match(published.body.content,/합성 QA/);assert.equal(published.body.qa,undefined);
+  await assert.rejects(seedQa(new Store(),clock,{CAREBRIDGE_TEST_ADMIN_ENABLED:'false'}));
 });

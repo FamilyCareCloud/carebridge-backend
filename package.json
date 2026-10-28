@@ -12,6 +12,7 @@
     "check": "node --test"
   },
   "dependencies": {
+    "@aws-sdk/client-apigatewaymanagementapi": "3.1128.0",
     "@aws-sdk/client-bedrock-runtime": "3.1128.0",
     "@aws-sdk/client-cognito-identity-provider": "3.1128.0",
     "@aws-sdk/client-dynamodb": "3.1128.0",

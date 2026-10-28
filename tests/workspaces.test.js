@@ -7,6 +7,8 @@ import { AuthService } from '../src/services/auth.js';
 import { createHttpServer } from '../src/handlers/http.js';
 import { evidenceSegments, hash } from '../src/carebridge-contract.js';
 import { CognitoAuthService } from '../src/adapters/cognito.js';
+import { workspacePolicy } from '../src/workspace-policy.js';
+import { createLambdaHandler } from '../src/handlers/lambda.js';
 
 const password = 'Synthetic!123';
 const memo = '식사를 절반 드셨습니다.';
@@ -182,7 +184,7 @@ test('최종본 QA 없이는 확정 불가, 편집 후 재검사·잘린 QA·보
   assert.equal((await f.call(f.reviewer,'POST',`${path}/check`,{expectedVersion:2})).status,502);
   f.ai.qa = async candidate => { const result = await normalQa(candidate); result.status = 'hold'; result.qa.checks[0].passed = false; return result; };
   assert.equal((await f.call(f.reviewer,'POST',`${path}/check`,{expectedVersion:2})).status,200);
-  assert.equal((await confirm(2)).body.code,'FINAL_QA_REQUIRED');
+  assert.equal((await f.call(f.reviewer,'GET',path)).body.finalQa.qa.checks[0].passed,false);
   let entered, resume; const start = new Promise(resolve=>{entered=resolve;}); const wait = new Promise(resolve=>{resume=resolve;});
   f.ai.qa = async candidate => { entered(); await wait; return normalQa(candidate); };
   const pending = f.call(f.reviewer,'POST',`${path}/check`,{expectedVersion:2}); await start;
@@ -201,6 +203,79 @@ test('전사는 확인용 텍스트만 반환, 지원 언어·입력 형식·작
   assert.equal((await f.call(f.author,'POST',`${f.p}/transcriptions`,{...body,audioBase64:'bad!'})).status,400);
   f.ai.transcribe = async () => ({text:'미확인',requires_transcript_review:false});
   assert.equal((await f.call(f.author,'POST',`${f.p}/transcriptions`,body)).status,502);
+});
+
+test('BE-07 유효한 AI 경고는 제출·확정·별도 공개를 막지 않고 그대로 보존', async () => {
+  const f = await fixture(), generate = f.ai.draft;
+  f.ai.draft = async input => {
+    const d = await generate(input); d.status='hold'; d.qa.checks[0].passed=false;
+    d.qa.issues.push({code:'SOURCE_INTEGRITY',severity:'hold',message:'원문 확인 경고'}); return d;
+  };
+  const {response:s} = await f.submit(); assert.equal(s.status,200);
+  const path = `${f.p}/submissions/${s.body.submissionId}`;
+  assert.equal((await f.call(f.reviewer,'POST',`${path}/check`,{expectedVersion:1})).status,502);
+  f.ai.qa = async candidate => ({status:'hold',model_checked:true,qa:candidate.qa});
+  assert.equal((await f.call(f.reviewer,'POST',`${path}/check`,{expectedVersion:1})).status,200);
+  const confirmed = await f.call(f.reviewer,'POST',`${path}/review`,{expectedVersion:1,decision:'confirm',confirmSource:true,confirmChecks:true});
+  assert.equal(confirmed.status,200,JSON.stringify(confirmed)); assert.equal(confirmed.body.status,'confirmed');
+  const detail = await f.call(f.author,'GET',path);
+  assert.equal(detail.body.generatedDraft.status,'hold'); assert.equal(detail.body.finalQa.qa.checks[0].passed,false);
+  assert.equal(detail.body.reviews[0].qaResult.qa.issues.at(-1).message,'원문 확인 경고');
+  assert.deepEqual((await f.call(f.viewer,'GET',`${f.p}/publications`)).body,[]);
+  const pub = await f.call(f.reviewer,'POST',`${f.p}/publications`,{submissionId:s.body.submissionId,expectedVersion:2,content:'선별한 내용',recipientIds:[f.viewer.userId]});
+  assert.equal(pub.status,200);
+  assert.equal((await f.call(f.reviewer,'POST',`${f.p}/publications/${pub.body.publicationId}/publish`,{expectedVersion:1})).status,200);
+});
+
+test('BE-01 승인 경합·기관 생성·이전 수락에서도 계정당 활성 기관 한 개', async () => {
+  const f = await fixture(), secondOwner = await f.signup('reviewer');
+  const second = (await f.call(secondOwner,'POST','/workspaces',{name:'두 번째 기관'})).body;
+  assert.equal((await f.call(f.reviewer,'POST','/workspaces',{name:'중복 기관'})).body.code,'SINGLE_WORKSPACE_REQUIRED');
+  const author = await f.signup('author');
+  const r1 = await f.call(author,'POST','/workspaces/join-requests',{code:f.w.inviteCode});
+  const r2 = await f.call(author,'POST','/workspaces/join-requests',{code:second.inviteCode});
+  assert.equal(r1.status,201);assert.equal(r2.status,201);
+  const outcomes = await Promise.all([
+    f.call(f.reviewer,'POST',`${f.p}/join-requests/${r1.body.requestId}/approve`,{expectedVersion:1}),
+    f.call(secondOwner,'POST',`/workspaces/${second.workspaceId}/join-requests/${r2.body.requestId}/approve`,{expectedVersion:1}),
+  ]);
+  assert.deepEqual(outcomes.map(r=>r.status).sort(),[200,409]);
+  const target = await f.signup('reviewer');
+  const access = await f.call(f.reviewer,'GET',`${f.p}/access`);
+  const transfer = await f.call(f.reviewer,'POST',`${f.p}/transfers`,{expectedVersion:access.body.revision,targetUserId:target.userId}); assert.equal(transfer.status,200);
+  const created = await f.call(target,'POST','/workspaces',{name:'대상자의 다른 기관'});assert.equal(created.status,201);
+  const accept = await f.call(target,'POST',`${f.p}/transfers/${transfer.body.transferId}/accept`,{expectedVersion:1});assert.equal(accept.body.code,'SINGLE_WORKSPACE_REQUIRED');
+});
+
+test('BE-03~05 발신 이전 요청 복구·관리 이력 페이지·퇴출된 작성자 표시', async () => {
+  const f = await fixture(), {response:s} = await f.submit(), next = await f.signup('reviewer');
+  let access = await f.call(f.reviewer,'GET',`${f.p}/access`);
+  const t = await f.call(f.reviewer,'POST',`${f.p}/transfers`,{expectedVersion:access.body.revision,targetUserId:next.userId});
+  const list = await f.call(f.reviewer,'GET',`${f.p}/transfers`); assert.equal(list.body[0].transferId,t.body.transferId);assert.equal(list.body[0].targetNameAtRequest,'reviewer');
+  assert.equal((await f.call(f.reviewer,'GET',`${f.p}/transfers/${t.body.transferId}`)).body.version,1);
+  access = await f.call(f.reviewer,'GET',`${f.p}/access`);
+  await f.call(f.reviewer,'DELETE',`${f.p}/members/${f.author.userId}`,{expectedVersion:access.body.revision});
+  await f.store.transaction(async tx=>{const u=await tx.get(`user#${f.author.userId}`);u.name='변경 이름';await tx.set(`user#${u.userId}`,u);});
+  const submission = await f.call(f.reviewer,'GET',`${f.p}/submissions/${s.body.submissionId}`);
+  assert.equal(submission.body.authorNameAtSubmission,'author');assert.equal(submission.body.authorCurrentName,'변경 이름');
+  const seen = new Set(); let cursor = '';
+  do {
+    const page = await f.call(f.reviewer,'GET',`${f.p}/audit?limit=2${cursor?'&cursor='+cursor:''}`);assert.equal(page.status,200);
+    for(const e of page.body.items){assert.equal(seen.has(e.eventId),false);seen.add(e.eventId);assert.ok(e.actorId);assert.ok(e.actorCurrentName);}
+    cursor=page.body.nextCursor;
+  } while(cursor);
+  const stored = await f.store.transaction(tx=>tx.get(`workspace#${f.w.workspaceId}`));assert.equal(seen.size,stored.audit.length);
+  assert.equal((await f.call(f.viewer,'GET',`${f.p}/audit`)).status,403);
+  assert.equal((await f.call(f.author,'GET',`${f.p}/audit`)).status,404);
+});
+
+test('BE-01 Lambda 경로에서도 동일 정책을 적용하고 AI 경고 확정 가능', async () => {
+  assert.deepEqual(workspacePolicy({CAREBRIDGE_MULTIPLE_WORKSPACES:'true',CAREBRIDGE_RECIPIENT_CHANGE:'retain'}),{multipleWorkspaces:false,confirmationEnabled:true,transferEnabled:true,recipientChange:'block_all'});
+  const f = await fixture(workspacePolicy({})), {response:s} = await f.submit();
+  f.ai.qa=async candidate=>{const qa=structuredClone(candidate.qa);qa.checks[0].passed=false;return {status:'hold',model_checked:true,qa};};
+  await f.call(f.reviewer,'POST',`${f.p}/submissions/${s.body.submissionId}/check`,{expectedVersion:1});
+  const result = await createLambdaHandler(f.app)({rawPath:`${f.p}/submissions/${s.body.submissionId}/review`,requestContext:{http:{method:'POST'}},headers:{authorization:`Bearer ${f.reviewer.token}`},body:JSON.stringify({expectedVersion:1,decision:'confirm',confirmSource:true,confirmChecks:true})});
+  assert.equal(result.statusCode,200);assert.equal(JSON.parse(result.body).status,'confirmed');
 });
 
 test('Cognito 가입 역할은 검증된 sub에 연결하고 기존 계정에는 자동 매핑하지 않음', async () => {

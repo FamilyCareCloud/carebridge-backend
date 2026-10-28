@@ -18,11 +18,26 @@ export class TestAuthService extends AuthService {
     await this.store.transaction(async tx => {
       for (const id of workspaceIds) if (!await tx.get(`workspace#${id}`)) fail(400, 'QA 작업 그룹이 존재하지 않습니다.');
       const old = await tx.get('test-admin#account');
+      const previous = old && await tx.get(`user#${old.userId}`);
       const user = { userId: old?.userId ?? randomUUID(), name: 'QA admin', email: 'admin', loginId: 'admin', isTestAdmin: true, qaWorkspaceIds: [...new Set(workspaceIds)], qaRole: 'author', groupIds: [], salt, passwordHash, createdAt: this.clock() };
+      for (const id of previous?.qaWorkspaceIds ?? []) {
+        if (workspaceIds.includes(id)) continue;
+        const w = await tx.get(`workspace#${id}`);
+        if (w) {
+          w.qaRecipientIds = (w.qaRecipientIds ?? []).filter(id => id !== user.userId);
+          for (const p of w.publications) p.recipients = p.recipients.filter(id => id !== user.userId);
+          await tx.set(`workspace#${id}`, w);
+        }
+      }
       await tx.set(`user#${user.userId}`, user);
       await tx.set('test-admin#account', { userId: user.userId });
       // Private alias used by the inherited password/session implementation.
       await tx.set('email#qa-admin@local.invalid', { userId: user.userId });
+      for (const id of workspaceIds) {
+        const w = await tx.get(`workspace#${id}`);
+        w.qaRecipientIds = [...new Set([...(w.qaRecipientIds ?? []), user.userId])];
+        await tx.set(`workspace#${id}`, w);
+      }
     });
   }
   async login(body) {

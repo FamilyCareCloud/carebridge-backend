@@ -14,7 +14,7 @@ import { CareGroupRepository, UserRepository } from './repositories/index.js';
 
 const MAX_AUDIO_BYTES = Number(process.env.AUDIO_MAX_BYTES) || 4 * 1024 * 1024;
 
-export function createApp(store, { clock = () => new Date().toISOString(), ai = new LocalAnalysisService(), stt = new LocalSttService(), auth: suppliedAuth, carebridge = createCarebridgeClient(), workspacePolicy = {} } = {}) {
+export function createApp(store, { clock = () => new Date().toISOString(), ai = new LocalAnalysisService(), stt = new LocalSttService(), auth: suppliedAuth, carebridge = createCarebridgeClient(), workspacePolicy = {}, realtime } = {}) {
   const auth = suppliedAuth ?? new AuthService(store, clock);
   const bridge = new CarebridgeService(store, clock, carebridge);
   const workspaces = new WorkspaceService(store, clock, carebridge, workspacePolicy);
@@ -42,7 +42,7 @@ export function createApp(store, { clock = () => new Date().toISOString(), ai = 
       const url = new URL(path, 'http://localhost');
       const parts = url.pathname.split('/').filter(Boolean);
       let result, status = 200;
-      if (url.pathname === '/health' && method === 'GET') return { status: 200, body: { status: 'ok', carebridge: { schema: 'carebridge.workflow.v1', aiConfigured: Boolean(carebridge.enabled) } } };
+      if (url.pathname === '/health' && method === 'GET') return { status: 200, body: { status: 'ok', version: process.env.APP_VERSION ?? 'local', carebridge: { schema: 'carebridge.workflow.v1', aiConfigured: Boolean(carebridge.enabled), websocketUrl: realtime?.websocketUrl ?? null } } };
       if (url.pathname === '/workspace-auth/register' && method === 'POST') {
         if (!['author', 'reviewer', 'viewer'].includes(body.role)) fail(400, '가입 역할을 선택해 주세요.');
         return { status: 201, body: await auth.register(body) };
@@ -54,6 +54,15 @@ export function createApp(store, { clock = () => new Date().toISOString(), ai = 
       } else {
         const userId = await auth.authenticate(token);
         if (parts[0] === 'workspaces') {
+          if (parts.length === 3 && parts[2] === 'event-tickets' && method === 'POST') {
+            fields(body, []);
+            if (!realtime) fail(503, '배포 WebSocket이 설정되지 않았습니다.', 'REALTIME_UNAVAILABLE');
+            return {status:200,body:await realtime.ticket(userId,parts[1],token)};
+          }
+          if (parts.length === 3 && parts[2] === 'events' && method === 'GET' && realtime) {
+            await store.transaction(tx=>workspaces.access(tx,userId,parts[1]));
+            return {status:200,body:{transport:'websocket',websocketUrl:realtime.websocketUrl,ticketPath:`/workspaces/${parts[1]}/event-tickets`}};
+          }
           const response = await workspaces.handle(userId, method, parts.slice(1), body, url.searchParams);
           if (method !== 'GET') notifications.emit('invalidate', parts[1]);
           return response;
@@ -66,7 +75,7 @@ export function createApp(store, { clock = () => new Date().toISOString(), ai = 
         }
         const workspaceAccount = await store.transaction(tx => tx.get(`user#${userId}`));
         if ((workspaceAccount?.workspaceRole || workspaceAccount?.isTestAdmin) && !['/me', '/auth/logout'].includes(url.pathname)) fail(403, '기관 계정은 작업 그룹 API를 사용해 주세요.');
-        if (url.pathname === '/auth/logout' && method === 'POST') { fields(body, []); result = await auth.logout(token); notifications.emit('invalidate', null); }
+        if (url.pathname === '/auth/logout' && method === 'POST') { fields(body, []); result = await auth.logout(token); if (realtime) await realtime.revokeUser(userId); notifications.emit('invalidate', null); }
         else if (url.pathname === '/me' && ['GET', 'PATCH'].includes(method)) result = await auth.profile(userId, method, body, token);
         else if (url.pathname === '/invitations/accept' && method === 'POST') result = await groups.accept(userId, body);
         else if (parts[0] === 'groups' && parts[2] === 'carebridge') return await bridge.handle(userId, parts[1], method, parts.slice(3), body, url.searchParams);

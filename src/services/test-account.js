@@ -1,15 +1,16 @@
-import { readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { TestAuthService } from './test-auth.js';
 import { WorkspaceService } from './workspaces.js';
+import { validatePassword } from './verification.js';
 
-export const testAccount = JSON.parse(readFileSync(new URL('../../config/test-account.json', import.meta.url), 'utf8'));
+export const testAccount = { loginId: 'admin' };
 
 export async function prepareTestAccount(store, clock, env = process.env) {
-  const enabled = env.CAREBRIDGE_TEST_ADMIN_ENABLED !== 'false';
+  const enabled = env.CAREBRIDGE_TEST_ADMIN_ENABLED === 'true';
   if (enabled && env.NODE_ENV === 'production') throw new Error('Test accounts are local-only');
   const auth = new TestAuthService(store, clock, { enabled });
   if (!enabled) return auth;
+  validatePassword(env.CAREBRIDGE_TEST_ADMIN_PASSWORD);
   let workspaceIds = (env.CAREBRIDGE_QA_WORKSPACE_IDS ?? '').split(',').map(id => id.trim()).filter(Boolean);
   if (!workspaceIds.length) {
     const saved = await store.transaction(tx => tx.get('test-qa-workspace'));
@@ -21,6 +22,6 @@ export async function prepareTestAccount(store, clock, env = process.env) {
       workspaceIds = [workspace.workspaceId];
     }
   }
-  await auth.provision(testAccount.password, workspaceIds);
+  await auth.provision(env.CAREBRIDGE_TEST_ADMIN_PASSWORD, workspaceIds);
   return auth;
 }
