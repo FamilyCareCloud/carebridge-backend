@@ -203,6 +203,7 @@ Resources:
   WorkspaceSocket:
     Type: AWS::ApiGatewayV2::Api
     Properties:
+      Name: !Sub '${AWS::StackName}-workspace-events'
       ProtocolType: WEBSOCKET
       RouteSelectionExpression: '$request.body.action'
   SocketIntegration:
