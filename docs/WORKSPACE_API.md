@@ -90,7 +90,7 @@ Cognito는 가입 성공의 UserSub에 역할을 서버 저장하고, 인증 후
 | POST /workspaces/{w}/publications/{p}/publish | `{expectedVersion}` → 확정 버전·현재 담당자·활성 수신자 재검증 후 공개 |
 | POST /workspaces/{w}/publications/{p}/revoke | `{expectedVersion}` → 전체 열람 차단 |
 
-열람자 응답 허용 필드는 `publicationId, version, subject:{subjectId,name,managementNumber}, content, publishedAt`뿐이다.
+열람자 응답 허용 필드는 `publicationId, version, subject:{subjectId,name,managementNumber}, content, recordedAt, publishedAt`뿐이다. `recordedAt`은 원본 제출의 `submittedAt`이며 정정·재공개 시에도 유지된다. 기존 공개 기록도 조회 시 원본 제출에서 보완하며 원본 시각이 없으면 `null`을 반환한다. 원문 메모·검토 이력·수신자 목록은 열람자에게 제공하지 않는다.
 확정·공개 준비·내용 정정만으로 공개되지 않는다. 재공개도 명시적 publish가 필요하다. 수신자는 항상 직접 선택하고 자동 가족 연결을 만들지 않는다.
 정정·철회·공개 버전 및 행위자 이력을 유지한다. 퇴출 시 활성 수신 권한을 제거하고 과거 제출을 보존한다.
 
