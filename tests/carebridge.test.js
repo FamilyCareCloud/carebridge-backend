@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createApp } from '../src/app.js';
 import { Store } from '../src/store.js';
-import { hash, evidenceSegments } from '../src/carebridge-contract.js';
+import { hash, evidenceSegments, validateReview } from '../src/carebridge-contract.js';
 import { CarebridgeClient } from '../src/adapters/carebridge.js';
 
 const codes=['SOURCE_INTEGRITY','SOURCE_COVERAGE','EVIDENCE_PRESERVED','TRANSLATION_CONSISTENCY','OBSERVATION_GROUNDING','NUMERIC_FACTS_PRESERVED','ASSISTANCE_FACT_PRESERVED','NEGATION_SIGNAL_PRESERVED','UNCERTAINTY_SIGNAL_PRESERVED','FOLLOW_UP_GROUNDING','NO_IDENTIFIERS_DETECTED','NO_MEDICAL_JUDGMENT','NO_INSTRUCTIONS','SHARING_BLOCKED'];
@@ -170,6 +170,40 @@ test('QA 보류·모델 장애는 승인으로 바뀌지 않으며 수동 보류
   assert.equal((await f.decide(n)).status,503);
   const held=await f.decide(n,'hold');assert.equal(held.status,200);assert.equal(held.body.status,'hold');
   assert.equal((await f.call(f.family,'GET',f.p+'/notes/'+n.id+'/preview')).status,409);
+});
+
+function explicitOmissionReview() {
+  const result={status:'hold',model_checked:false,segments:[],qa:qa()};
+  result.qa.checks.push({code:'SEMANTIC_OMITTED_FACTS',passed:false});
+  result.qa.issues.push({code:'SEMANTIC_OMITTED_FACTS',severity:'hold',message:'원문 대상 누락'});
+  return result;
+}
+
+test('모델 호출 전 명시적 누락 보류를 저장하되 승인·가족 열람은 차단',async()=>{
+  const f=await fixture(),n=(await f.create()).body;
+  f.ai.qa=async()=>explicitOmissionReview();
+  const checked=await f.call(f.reviewer,'POST',f.p+'/notes/'+n.id+'/check',{expectedVersion:n.version});
+  assert.equal(checked.status,200,JSON.stringify(checked));
+  assert.equal(checked.body.status,'hold');
+  assert.equal((await f.decide(checked.body)).status,409);
+  assert.equal((await f.call(f.family,'GET',f.p+'/notes/'+n.id+'/preview')).status,409);
+  assert.equal((await f.call(f.reviewer,'GET',f.p+'/notes/'+n.id)).body.approvedVersion,null);
+});
+
+test('사전 누락 보류에는 실패 체크와 같은 코드의 보류 사유가 모두 필요',()=>{
+  assert.doesNotThrow(()=>validateReview(explicitOmissionReview()));
+  for(const mutate of [
+    r=>{r.qa.checks.find(c=>c.code==='SEMANTIC_OMITTED_FACTS').passed=true;},
+    r=>{r.qa.issues=r.qa.issues.filter(i=>i.code!=='SEMANTIC_OMITTED_FACTS');},
+    r=>{r.qa.issues.find(i=>i.code==='SEMANTIC_OMITTED_FACTS').severity='review';},
+    r=>{r.qa.checks.find(c=>c.code==='SEMANTIC_OMITTED_FACTS').code='UNKNOWN_RULE';},
+    r=>{r.status='review_required';},
+    r=>{r.segments=[{}];},
+    r=>{r.qa.external_share_allowed=true;},
+  ]) {
+    const result=explicitOmissionReview();mutate(result);
+    assert.throws(()=>validateReview(result));
+  }
 });
 test('동시 수정과 승인 경쟁은 최신 버전만 성공, 승인 중 역할 철회도 재검사',async()=>{
   const f=await fixture(),n=(await f.create()).body;

@@ -77,7 +77,9 @@ export function validateReview(value, draft) {
       === value.segments.every(s=>s.checks.find(c=>c.code===code).passed)));
   } else {
     ensure(value.status === 'hold' && value.segments.length === 0);
-    ensure(baseChecks.some(code=>value.qa.checks.find(c=>c.code===code).passed===false));
+    const explicitOmissionHold = value.qa.checks.some(c=>c.code==='SEMANTIC_OMITTED_FACTS' && c.passed===false)
+      && value.qa.issues.some(i=>i.code==='SEMANTIC_OMITTED_FACTS' && i.severity==='hold');
+    ensure(baseChecks.some(code=>value.qa.checks.find(c=>c.code===code).passed===false) || explicitOmissionHold);
   }
   return value.qa;
 }
