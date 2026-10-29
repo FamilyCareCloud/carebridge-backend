@@ -176,14 +176,41 @@ test('확정과 별도 공개, 지정 수신자만 선별 내용 열람·정정 
   assert.deepEqual((await f.call(f.viewer,'GET',`${f.p}/publications`)).body,[]);
   assert.equal((await f.call(f.reviewer,'POST',`${path}/publish`,{expectedVersion:1})).status,200);
   const read = await f.call(f.viewer,'GET',path); assert.equal(read.body.content,'선별한 공개 내용');
-  assert.deepEqual(Object.keys(read.body).sort(),['publicationId','version','subject','content','publishedAt'].sort());
+  assert.deepEqual(Object.keys(read.body).sort(),['publicationId','version','subject','content','recordedAt','publishedAt'].sort());
+  assert.equal(read.body.recordedAt,clock());
   const other = await f.signup('viewer'); await f.admit(other); assert.equal((await f.call(other,'GET',path)).status,404);
   assert.equal((await f.call(f.reviewer,'PATCH',path,{expectedVersion:2,content:'정정된 내용'})).status,200);
   assert.equal((await f.call(f.viewer,'GET',path)).status,404);
   assert.equal((await f.call(f.reviewer,'POST',`${path}/publish`,{expectedVersion:3})).status,200);
   assert.equal((await f.call(f.viewer,'GET',path)).body.content,'정정된 내용');
+  assert.equal((await f.call(f.viewer,'GET',path)).body.recordedAt,pub.recordedAt);
   assert.equal((await f.call(f.reviewer,'POST',`${path}/revoke`,{expectedVersion:4})).status,200);
   assert.equal((await f.call(f.viewer,'GET',path)).status,404);
+});
+
+test('기존 공개 기록의 원본 제출 시각 보완, 재공개 후에도 기록 시각 유지', async () => {
+  const f=await fixture(), pub=await f.publication(), path=`${f.p}/publications/${pub.publicationId}`;
+  assert.equal(pub.recordedAt,clock());
+  const recordedAt='2026-10-28T10:30:00.000Z';
+  await f.store.transaction(async tx=>{
+    const w=await tx.get(`workspace#${f.w.workspaceId}`);
+    delete w.publications[0].recordedAt;
+    w.submissions.find(s=>s.submissionId===pub.submissionId).submittedAt=recordedAt;
+    await tx.set(`workspace#${f.w.workspaceId}`,w);
+  });
+  await f.call(f.reviewer,'POST',`${path}/publish`,{expectedVersion:1});
+  const first=(await f.call(f.viewer,'GET',path)).body;
+  assert.equal(first.recordedAt,recordedAt);assert.equal(first.publishedAt,clock());
+  assert.equal((await f.call(f.reviewer,'GET',`${f.p}/publications`)).body[0].recordedAt,recordedAt);
+  await f.call(f.reviewer,'POST',`${path}/revoke`,{expectedVersion:2});
+  const blocked=(await f.call(f.reviewer,'GET',path)).body;
+  assert.deepEqual(blocked.recipientIds,[f.viewer.userId]);assert.equal(blocked.content,'선별한 공개 내용');
+  assert.equal((await f.call(f.viewer,'GET',path)).status,404);
+  await f.call(f.reviewer,'PATCH',path,{expectedVersion:3,content:'재공개할 내용'});
+  await f.call(f.reviewer,'POST',`${path}/publish`,{expectedVersion:4});
+  const next=(await f.call(f.viewer,'GET',`${f.p}/publications`)).body[0];
+  assert.equal(next.recordedAt,recordedAt);assert.equal(next.content,'재공개할 내용');
+  assert.deepEqual(Object.keys(next).sort(),['publicationId','version','subject','content','recordedAt','publishedAt'].sort());
 });
 
 test('수신자 변경에서 추가자는 재공개 전 차단, 퇴출 후 서버 접근 차단·기록 보존', async () => {

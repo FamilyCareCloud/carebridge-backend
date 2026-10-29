@@ -222,13 +222,15 @@ export class WorkspaceService {
         }
       }
       if (resource === 'publications') {
-        const viewerShape = p => ({ publicationId: p.publicationId, version: p.version, subject: p.subject, content: p.content, publishedAt: p.publishedAt });
+        const recordedAt = p => p.recordedAt ?? w.submissions.find(s => s.submissionId === p.submissionId)?.submittedAt ?? null;
+        const viewerShape = p => ({ publicationId: p.publicationId, version: p.version, subject: p.subject, content: p.content, recordedAt: recordedAt(p), publishedAt: p.publishedAt });
         if (role === 'author') fail(403, '공개 기록 접근 권한이 없습니다.');
         const visible = p => p.status === 'published' && p.recipients.includes(userId);
         if (method === 'GET') {
           const items = w.publications.filter(p => role === 'reviewer' || visible(p));
           const p = itemId ? items.find(p => p.publicationId === itemId) ?? notFound() : null;
-          return itemId ? (role === 'viewer' ? viewerShape(p) : p) : items.map(p => role === 'viewer' ? viewerShape(p) : p);
+          const shape = p => role === 'viewer' ? viewerShape(p) : { ...p, recordedAt: recordedAt(p) };
+          return itemId ? shape(p) : items.map(shape);
         }
         reviewer();
         if (!itemId && method === 'POST') {
@@ -236,7 +238,7 @@ export class WorkspaceService {
           const s = w.submissions.find(s => s.submissionId === body.submissionId) ?? notFound();
           version(body.expectedVersion, s.version);
           if (s.status !== 'confirmed') fail(409, '확정된 제출만 공개 준비할 수 있습니다.');
-          const p = { publicationId: randomUUID(), submissionId: s.submissionId, confirmedVersion: s.version, subject: s.subject, content: text(body.content, 'content', 8000), recipientIds: this.recipients(w, body.recipientIds), recipients: [], status: 'unpublished', version: 1, history: [] };
+          const p = { publicationId: randomUUID(), submissionId: s.submissionId, recordedAt: s.submittedAt, confirmedVersion: s.version, subject: s.subject, content: text(body.content, 'content', 8000), recipientIds: this.recipients(w, body.recipientIds), recipients: [], status: 'unpublished', version: 1, history: [] };
           w.publications.push(p); await this.save(tx, w, user, 'prepare-publication', p.publicationId); return p;
         }
         const p = w.publications.find(p => p.publicationId === itemId) ?? notFound();
