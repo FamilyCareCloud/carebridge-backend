@@ -138,9 +138,17 @@ export class WorkspaceService {
           if (action === 'approve') {
             const target = await this.user(tx, r.userId);
             if (target.workspaceRole !== r.role) fail(409, '신청자의 역할이 변경됐습니다.');
-            if (w.members.some(m => m.userId === r.userId)) fail(409, '재가입 정책 결정이 필요합니다.', 'POLICY_REQUIRED');
+            const member = w.members.find(m => m.userId === r.userId);
+            if (member && member.status !== 'removed') fail(409, '이미 참여 중입니다.');
             await this.assertSingleWorkspace(tx, r.userId, id, true);
-            w.members.push({ userId: r.userId, name: target.name, role: r.role, status: 'active', joinedAt: this.clock() });
+            const membership = { userId: r.userId, name: target.name, role: r.role, status: 'active', joinedAt: this.clock() };
+            if (member) {
+              // Keep one current membership; preserve each previous admission/removal.
+              member.history ??= [];
+              member.history.push({ joinedAt: member.joinedAt ?? null, removedAt: member.removedAt ?? null, role: member.role });
+              Object.assign(member, membership);
+              delete member.removedAt;
+            } else w.members.push(membership);
           }
           await this.save(tx, w, user, action, itemId); return r;
         }
@@ -284,7 +292,10 @@ export class WorkspaceService {
         const member = w.members.find(m => m.userId === userId), request = w.requests.filter(r => r.userId === userId).at(-1);
         const transfers = w.transfers?.filter(t => t.targetUserId === userId && t.status === 'pending') ?? [];
         const qaAccess = Boolean(user.isTestAdmin && user.qaWorkspaceIds?.includes(id));
-        items.push({ workspaceId: id, name: w.name, status: qaAccess || w.ownerReviewerId === userId ? 'active' : member?.status ?? request?.status ?? (transfers.length ? 'transfer_pending' : 'inactive'), role: qaAccess ? user.qaRole : w.ownerReviewerId === userId ? 'reviewer' : member?.role ?? user.workspaceRole, testAccess: qaAccess, request, transfers });
+        const status = member?.status === 'active' ? 'active'
+          : ['pending', 'rejected'].includes(request?.status) ? request.status
+          : member?.status ?? request?.status ?? (transfers.length ? 'transfer_pending' : 'inactive');
+        items.push({ workspaceId: id, name: w.name, status: qaAccess || w.ownerReviewerId === userId ? 'active' : status, role: qaAccess ? user.qaRole : w.ownerReviewerId === userId ? 'reviewer' : member?.role ?? user.workspaceRole, testAccess: qaAccess, request, transfers });
       }
       return items;
     });
@@ -297,7 +308,7 @@ export class WorkspaceService {
       const match = await tx.get(`workspace-code#${code}`);
       if (!match) fail(400, '유효하지 않은 코드입니다.');
       const w = await tx.get(key(match.workspaceId));
-      if (w.members.some(m => m.userId === userId)) fail(409, '이미 참여했거나 재가입 정책 결정이 필요합니다.');
+      if (w.members.some(m => m.userId === userId && m.status !== 'removed')) fail(409, '이미 참여 중입니다.');
       const pending = w.requests.find(r => r.userId === userId && r.status === 'pending');
       if (pending) return pending;
       await this.assertSingleWorkspace(tx, userId, w.workspaceId);
