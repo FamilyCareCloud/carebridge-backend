@@ -1,7 +1,9 @@
-import { fields, email, text, fail } from '../domain.js';
+import { fields, email, text, fail, choice } from '../domain.js';
+import { isDeepStrictEqual } from 'node:util';
 import { UserRepository } from '../repositories/index.js';
 import { publicUser } from '../services/auth.js';
 import { validatePassword, authError, VerificationDelivery } from '../services/verification.js';
+import { deployedAdminKey, validAdminConfig, requireDeployedAdmin, adminRoles } from '../services/deployed-admin.js';
 const ERRORS = {
   NotAuthorizedException: [401, 'INVALID_CREDENTIALS', '이메일 또는 비밀번호가 올바르지 않거나 로그인이 만료되었습니다.'],
   UserNotFoundException: [404, 'ACCOUNT_NOT_FOUND', '가입된 계정을 찾을 수 없습니다.'],
@@ -58,7 +60,8 @@ export class CognitoAuthService {
     }
   }
   async register(body) {
-    fields(body, ['name', 'email', 'password']);
+    fields(body, ['name', 'email', 'password', 'role']);
+    const workspaceRole = body.role === undefined ? null : choice(body.role, ['author', 'reviewer', 'viewer'], 'role');
     const address = email(body.email), name = text(body.name, 'name', 100);
     validatePassword(body.password);
     const existing = await this.account(address);
@@ -67,7 +70,9 @@ export class CognitoAuthService {
       throw authError(409, 'ACCOUNT_ALREADY_EXISTS', '이미 가입된 이메일입니다. 로그인해주세요.');
     }
     try {
-      return await this.deliver(address, 'SignUpCommand', { ClientId: this.clientId, Username: address, Password: body.password, UserAttributes: [{ Name: 'name', Value: name }, { Name: 'email', Value: address }] });
+      const result = await this.deliver(address, 'SignUpCommand', { ClientId: this.clientId, Username: address, Password: body.password, UserAttributes: [{ Name: 'name', Value: name }, { Name: 'email', Value: address }] });
+      if (workspaceRole && result.userId) await this.store.transaction(tx => tx.set(`workspace-signup#${result.userId}`, { role: workspaceRole }));
+      return result;
     } catch (error) {
       if (error.code === 'ACCOUNT_ALREADY_EXISTS') {
         const account = await this.account(address);
@@ -92,8 +97,15 @@ export class CognitoAuthService {
     return { confirmed: true, status: 'CONFIRMED', nextAction: 'LOGIN' };
   }
   async login(body) {
-    fields(body, ['email', 'password']);
-    const address = email(body.email);
+    fields(body, ['email', 'loginId', 'password']);
+    if (body.email !== undefined && body.loginId !== undefined) fail(400, '로그인 정보를 확인해 주세요.');
+    let address, expectedAdminId;
+    if (body.loginId !== undefined) {
+      const config = await this.store.transaction(tx => tx.get(deployedAdminKey));
+      if (body.loginId !== 'admin' || !validAdminConfig(config)) throw authError(401, 'INVALID_CREDENTIALS', '이메일 또는 비밀번호가 올바르지 않습니다.');
+      address = config.username;
+      expectedAdminId = config.userId;
+    } else address = email(body.email);
     if (typeof body.password !== 'string' || body.password.length > 128 || !body.password.length) fail(400, '비밀번호가 필요합니다.');
     let response;
     try { response = await this.send('InitiateAuthCommand', { ClientId: this.clientId, AuthFlow: 'USER_PASSWORD_AUTH', AuthParameters: { USERNAME: address, PASSWORD: body.password } }); }
@@ -104,6 +116,7 @@ export class CognitoAuthService {
     if (!response.AuthenticationResult?.AccessToken) throw authError(401, 'ADDITIONAL_AUTH_REQUIRED', '추가 인증이 필요합니다.');
     const accessToken = response.AuthenticationResult.AccessToken;
     const userId = await this.authenticate(accessToken);
+    if (expectedAdminId && userId !== expectedAdminId) throw authError(401, 'INVALID_CREDENTIALS', '이메일 또는 비밀번호가 올바르지 않습니다.');
     return { accessToken, tokenType: 'Bearer', expiresAt: new Date(Date.parse(this.clock()) + response.AuthenticationResult.ExpiresIn * 1000).toISOString(), user: await this.profile(userId, 'GET') };
   }
   async authenticate(token) {
@@ -113,9 +126,28 @@ export class CognitoAuthService {
     if (!attributes.sub || attributes.email_verified !== 'true') fail(403, '이메일 인증이 필요합니다.', 'EMAIL_NOT_VERIFIED');
     await this.store.transaction(async tx => {
       const repo = new UserRepository(tx), existing = await repo.findById(attributes.sub);
-      if (!existing) await repo.save({ userId: attributes.sub, email: attributes.email.toLowerCase(), name: attributes.name ?? attributes.email, role: 'caregiver', createdAt: this.clock(), groupIds: [] });
+      const config = await tx.get(deployedAdminKey);
+      if ((existing?.deployedTestAdmin || existing?.isTestAdmin) && (!validAdminConfig(config) || config.userId !== attributes.sub)) fail(401, '로그인이 필요합니다.');
+      if (validAdminConfig(config) && config.userId === attributes.sub) {
+        const user = { userId: attributes.sub, email: attributes.email.toLowerCase(), name: attributes.name ?? '개발 담당자', createdAt: existing?.createdAt ?? this.clock(), groupIds: [], isTestAdmin: true, deployedTestAdmin: true, qaRole: adminRoles.includes(existing?.qaRole) ? existing.qaRole : 'reviewer', qaWorkspaceIds: [...config.workspaceIds] };
+        if (!isDeepStrictEqual(existing, user)) await repo.save(user);
+      } else if (!existing) {
+        const signup = await tx.get(`workspace-signup#${attributes.sub}`);
+        await repo.save({ userId: attributes.sub, email: attributes.email.toLowerCase(), name: attributes.name ?? attributes.email, role: signup?.role ?? 'caregiver', ...(signup ? { workspaceRole: signup.role } : {}), createdAt: this.clock(), groupIds: [] });
+      }
     });
     return attributes.sub;
+  }
+  async selectTestRole(userId, body) {
+    fields(body, ['role']); const role = choice(body.role, adminRoles, 'role');
+    return this.store.transaction(async tx => {
+      const stored = await tx.get(`user#${userId}`);
+      const user = await requireDeployedAdmin(tx, stored);
+      delete user.workspaceRole;
+      user.qaRole = role;
+      await tx.set(`user#${userId}`, user);
+      return publicUser(user);
+    });
   }
   async logout(token) { await this.send('GlobalSignOutCommand', { AccessToken: token }); return { loggedOut: true }; }
   async profile(userId, method, body, token) {
