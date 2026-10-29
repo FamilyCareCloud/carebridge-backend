@@ -81,6 +81,62 @@ test('코드만으로 접근 불가, 중복 대기 멱등, 거절 후 별도 요
   assert.equal((await f.call(outsider,'GET',`${f.p}/subjects`)).status,200);
 });
 
+for (const role of ['author', 'viewer']) test(`${role}: 퇴출 후 같은 기관 재요청·거절·재승인, 이력 보존과 과거 수신 권한 미복구`, async () => {
+  const f = await fixture(), user = f[role], pub = await f.publication();
+  const pubPath = `${f.p}/publications/${pub.publicationId}`;
+  await f.call(f.reviewer,'POST',`${pubPath}/publish`,{expectedVersion:1});
+  for (let cycle = 0; cycle < 2; cycle++) {
+    const access = await f.call(f.reviewer,'GET',`${f.p}/access`);
+    assert.equal((await f.call(f.reviewer,'DELETE',`${f.p}/members/${user.userId}`,{expectedVersion:access.body.revision})).status,200);
+    assert.equal((await f.call(user,'GET','/workspaces')).body[0].status,'removed');
+    const request = await f.call(user,'POST','/workspaces/join-requests',{code:f.w.inviteCode});
+    assert.equal(request.status,201);
+    const duplicate = await f.call(user,'POST','/workspaces/join-requests',{code:f.w.inviteCode});
+    assert.equal(duplicate.body.requestId,request.body.requestId);
+    assert.equal((await f.call(user,'GET','/workspaces')).body[0].status,'pending');
+    assert.equal((await f.call(user,'GET',`${f.p}/access`)).status,404);
+    assert.equal((await f.call(user,'GET',pubPath)).status,404);
+    assert.equal((await f.call(f.reviewer,'POST',`${f.p}/join-requests/${request.body.requestId}/reject`,{expectedVersion:1})).status,200);
+    assert.equal((await f.call(user,'GET','/workspaces')).body[0].status,'rejected');
+    assert.equal((await f.call(user,'GET',`${f.p}/access`)).status,404);
+    const retry = await f.call(user,'POST','/workspaces/join-requests',{code:f.w.inviteCode});
+    assert.equal(retry.status,201);assert.notEqual(retry.body.requestId,request.body.requestId);
+    const approve = `${f.p}/join-requests/${retry.body.requestId}/approve`;
+    assert.equal((await f.call(f.reviewer,'POST',approve,{expectedVersion:1})).status,200);
+    assert.equal((await f.call(f.reviewer,'POST',approve,{expectedVersion:1})).status,409);
+    assert.equal((await f.call(user,'GET',`${f.p}/access`)).status,200);
+    assert.equal((await f.call(user,'GET','/workspaces')).body[0].status,'active');
+    const stored = await f.store.transaction(tx=>tx.get(`workspace#${f.w.workspaceId}`));
+    const members = stored.members.filter(m=>m.userId===user.userId);
+    assert.equal(members.length,1);assert.equal(members[0].history.length,cycle+1);
+    assert.ok(members[0].history.every(h=>h.joinedAt && h.removedAt));
+    assert.equal(stored.audit.filter(e=>e.action==='remove-member' && e.resourceId===user.userId).length,cycle+1);
+    assert.equal(stored.submissions.length,1);
+    if (role==='viewer') {
+      assert.equal((await f.call(user,'GET',pubPath)).status,404);
+      assert.deepEqual((await f.call(user,'GET',`${f.p}/publications`)).body,[]);
+    } else assert.equal((await f.call(user,'GET',`${f.p}/submissions`)).body.length,1);
+  }
+});
+
+test('퇴출 후 다른 기관 참여 허용, 대기 중 접근 차단 및 재승인 시 단일 기관 제한 유지', async () => {
+  const f = await fixture(), otherReviewer = await f.signup('reviewer');
+  const other = (await f.call(otherReviewer,'POST','/workspaces',{name:'두 번째 합성 기관'})).body;
+  const access = await f.call(f.reviewer,'GET',`${f.p}/access`);
+  await f.call(f.reviewer,'DELETE',`${f.p}/members/${f.viewer.userId}`,{expectedVersion:access.body.revision});
+  const sameRequest = await f.call(f.viewer,'POST','/workspaces/join-requests',{code:f.w.inviteCode});
+  const otherRequest = await f.call(f.viewer,'POST','/workspaces/join-requests',{code:other.inviteCode});
+  assert.equal(otherRequest.status,201);
+  assert.equal((await f.call(f.viewer,'GET',`/workspaces/${other.workspaceId}/access`)).status,404);
+  assert.equal((await f.call(otherReviewer,'POST',`/workspaces/${other.workspaceId}/join-requests/${otherRequest.body.requestId}/approve`,{expectedVersion:1})).status,200);
+  assert.equal((await f.call(f.viewer,'GET',`/workspaces/${other.workspaceId}/access`)).status,200);
+  const denied = await f.call(f.reviewer,'POST',`${f.p}/join-requests/${sameRequest.body.requestId}/approve`,{expectedVersion:1});
+  assert.equal(denied.status,409);assert.equal(denied.body.code,'SINGLE_WORKSPACE_REQUIRED');
+  assert.equal((await f.call(f.viewer,'GET',`${f.p}/access`)).status,404);
+  const rows = (await f.call(f.viewer,'GET','/workspaces')).body;
+  assert.equal(rows.filter(w=>w.status==='active').length,1);
+});
+
 test('동명이인 동시 등록에도 관리번호 유일, 작성자 목록에서 내부 메모 제외', async () => {
   const f = await fixture();
   const rs = await Promise.all(Array.from({length:6},()=>f.call(f.reviewer,'POST',`${f.p}/subjects`,{name:'같은 이름',memo:'내부용'})));
