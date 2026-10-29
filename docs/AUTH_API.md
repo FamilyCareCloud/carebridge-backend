@@ -106,7 +106,13 @@ const validPassword = value => typeof value === 'string'
 
 성공 응답의 accepted는 Cognito CodeDeliveryDetails를 확인했다는 뜻이며 수신함 도착 확인이 아닙니다. 가짜 성공 응답을 방지하기 위해 재전송 전 실제 계정 상태를 AdminGetUser로 확인합니다. Cognito는 사용자 존재 은닉 설정에서 없는 사용자에게도 유사한 발송 응답을 반환할 수 있습니다.
 
-서버 로그는 `cognito_error`(operation/providerCode/requestId), `confirmation_delivery_accepted`를 남깁니다. 이메일·비밀번호·인증코드·원문 오류 메시지는 로그에 넣지 않습니다. 발송 요청의 SDK 자동 재시도는 꺼 두어 의도하지 않은 중복 발송을 피합니다.
+서버 로그는 `cognito_error`(operation/providerCode/requestId), `confirmation_delivery_accepted`를 남깁니다. 세션 오류에는 `reason` 열거값(expired/revoked/invalid/refresh_rejected/credentials_rejected)만 추가합니다. 이메일·비밀번호·인증코드·토큰·원문 오류 메시지는 로그에 넣지 않습니다. 발송 요청의 SDK 자동 재시도는 꺼 두어 의도하지 않은 중복 발송을 피합니다.
+
+`POST /auth/login`은 Cognito의 `refreshToken`과 `expiresAt`도 반환합니다. `POST /auth/refresh`에 `{refreshToken}`을 전송하면 `REFRESH_TOKEN_AUTH`로 갱신하고, 새 access token도 GetUser로 확인한 뒤 동일한 세션 응답을 반환합니다. 만료된 access token을 요구하지 않는 공개 인증 경로이며, refresh credential 자체로 Cognito가 인증합니다. 로컬 비밀번호 인증 환경에는 이 기능이 없습니다.
+
+GetUser가 거절하면 `SESSION_EXPIRED`, `SESSION_REVOKED`, `SESSION_INVALID`(각 401)로 구분합니다. 비밀번호 로그인 실패는 기존 `INVALID_CREDENTIALS`를 유지합니다. 프론트는 세션 정보를 메모리에만 보관하고 30초 이내 만료 예정이면 한 번 갱신합니다. 동시에 들어온 요청은 같은 갱신을 기다립니다. 명시적 SESSION_EXPIRED만 한 차례 재시도하며, 폐기·권한 거절·네트워크 실패를 재전송하지 않습니다. 로그아웃은 진행 중인 갱신을 끝낸 뒤 GlobalSignOut으로 새 토큰까지 폐기합니다. 기존 계정·기관·역할 검증과 실시간 접근 확인은 유지됩니다.
+
+현재 SAM 클라이언트는 refresh token 1일, access token 1시간이며 refresh token rotation 없이 ALLOW_REFRESH_TOKEN_AUTH를 허용합니다. Rotation을 도입할 때는 [AWS 공식 갱신 안내](https://docs.aws.amazon.com/cognito/latest/developerguide/amazon-cognito-user-pools-using-the-refresh-token.html)에 따라 API도 변경해야 합니다. 갱신은 원래 refresh token의 유효기간을 연장하지 않습니다.
 
 읽기 전용 구성 확인:
 
