@@ -4,8 +4,8 @@ import { fail } from './domain.js';
 export const categories = ['meal','hydration','mobility','sleep','hygiene','medication','condition','other'];
 export const question = '이 관찰의 의미와 빠진 정보를 원문 작성자에게 확인해 주세요.';
 export const hash = value => createHash('sha256').update(value, 'utf8').digest('hex');
-const baseChecks = ['SOURCE_INTEGRITY','SOURCE_COVERAGE','EVIDENCE_PRESERVED','TRANSLATION_CONSISTENCY','OBSERVATION_GROUNDING','NUMERIC_FACTS_PRESERVED','NEGATION_SIGNAL_PRESERVED','UNCERTAINTY_SIGNAL_PRESERVED','FOLLOW_UP_GROUNDING','NO_IDENTIFIERS_DETECTED','NO_MEDICAL_JUDGMENT','NO_INSTRUCTIONS','SHARING_BLOCKED'];
-const semanticChecks = ['SEMANTIC_NEGATION','SEMANTIC_UNCERTAINTY','SEMANTIC_ADDED_FACTS','SEMANTIC_MEDICAL'];
+const baseChecks = ['SOURCE_INTEGRITY','SOURCE_COVERAGE','EVIDENCE_PRESERVED','TRANSLATION_CONSISTENCY','OBSERVATION_GROUNDING','NUMERIC_FACTS_PRESERVED','ASSISTANCE_FACT_PRESERVED','NEGATION_SIGNAL_PRESERVED','UNCERTAINTY_SIGNAL_PRESERVED','FOLLOW_UP_GROUNDING','NO_IDENTIFIERS_DETECTED','NO_MEDICAL_JUDGMENT','NO_INSTRUCTIONS','SHARING_BLOCKED'];
+const semanticChecks = ['SEMANTIC_NEGATION','SEMANTIC_UNCERTAINTY','SEMANTIC_ADDED_FACTS','SEMANTIC_MEDICAL','SEMANTIC_OMITTED_FACTS'];
 const bad = () => fail(502, 'AI 응답의 근거·형식을 확인하지 못했습니다.', 'CAREBRIDGE_BAD_RESPONSE');
 const ensure = value => { if (!value) bad(); };
 const bounded = (value, max = 4000) => typeof value === 'string' && value.trim().length > 0 && value.length <= max;
@@ -61,10 +61,25 @@ export function validateDraft(draft, expectedSource) {
   ensure(draft.status === (hasHold(draft.qa) ? 'hold' : 'review_required'));
   return structuredClone(draft);
 }
-export function validateReview(value) {
+export function validateReview(value, draft) {
   ensure(object(value) && ['hold','review_required'].includes(value.status) && typeof value.model_checked === 'boolean');
-  validateQa(value.qa, value.status !== 'hold');
+  validateQa(value.qa, value.model_checked);
   ensure(value.status === (hasHold(value.qa) ? 'hold' : 'review_required'));
-  ensure(value.status === 'hold' || value.model_checked === true);
+  ensure(Array.isArray(value.segments));
+  if (value.model_checked) {
+    const expected = draft?.translation?.segments;
+    ensure(Array.isArray(expected) && expected.length > 0 && value.segments.length === expected.length);
+    ensure(value.segments.every((s,i) => object(s) && sameEvidence(s.evidence,expected[i].evidence)
+      && Array.isArray(s.checks) && s.checks.length === semanticChecks.length
+      && s.checks.every(c=>object(c) && semanticChecks.includes(c.code) && typeof c.passed === 'boolean')
+      && new Set(s.checks.map(c=>c.code)).size === semanticChecks.length));
+    ensure(semanticChecks.every(code => value.qa.checks.find(c=>c.code===code).passed
+      === value.segments.every(s=>s.checks.find(c=>c.code===code).passed)));
+  } else {
+    ensure(value.status === 'hold' && value.segments.length === 0);
+    const explicitOmissionHold = value.qa.checks.some(c=>c.code==='SEMANTIC_OMITTED_FACTS' && c.passed===false)
+      && value.qa.issues.some(i=>i.code==='SEMANTIC_OMITTED_FACTS' && i.severity==='hold');
+    ensure(baseChecks.some(code=>value.qa.checks.find(c=>c.code===code).passed===false) || explicitOmissionHold);
+  }
   return value.qa;
 }

@@ -198,7 +198,7 @@ export class CarebridgeService {
     // Full source cannot be supplied by the caller. It is always the stored source.
     if (JSON.stringify(draft.source)!==JSON.stringify(captured.source)) fail(409,'저장된 원문이 일치하지 않습니다.');
     if (decision!=='hold') {
-      draft.qa=validateReview(await this.ai.qa(draft));
+      draft.qa=validateReview(await this.ai.qa(draft),draft);
       draft.status=hasHold(draft.qa)?'hold':'review_required';
     }
     if (decision==='approve') {
@@ -225,6 +225,7 @@ export class CarebridgeService {
       const note=await this.read(tx,g,id);
       if (note.status!=='approved'||note.approvedVersion!==note.version) fail(409,'현재 버전은 승인되지 않아 가족 미리보기를 열 수 없습니다.','CAREBRIDGE_NOT_APPROVED');
       const snapshot=await tx.get(versionKey(g,id,note.version));
+      if (snapshot && !['ASSISTANCE_FACT_PRESERVED','SEMANTIC_OMITTED_FACTS'].every(code=>snapshot.draft.qa.checks.some(c=>c.code===code))) fail(409,'검사 정책이 변경됐습니다. 담당자가 재검사 후 다시 승인해야 합니다.','CAREBRIDGE_RECHECK_REQUIRED');
       if (!snapshot || hasHold(validateQa(snapshot.draft.qa,true))) fail(409,'승인 버전의 검사를 확인하지 못했습니다.');
       return {id:note.id,version:note.version,approvedAt:note.approvedAt,label:'담당자 검토 완료 · 교육용 미리보기 · 공식기록 아님',manualOnly:true,observations:snapshot.draft.observations.map(o=>({category:o.category,text:o.text}))};
     }, {validateReads:true});

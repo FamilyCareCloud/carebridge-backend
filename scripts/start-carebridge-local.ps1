@@ -9,7 +9,10 @@ param(
 $ErrorActionPreference = "Stop"
 $backendRepo = Split-Path -Parent $PSScriptRoot
 $siblings = Split-Path -Parent $backendRepo
-if (-not $AiRepo) { $AiRepo = Join-Path $siblings "fcc-ai" }
+if (-not $AiRepo) {
+    $AiRepo = Join-Path $siblings "carebridge-ai"
+    if (-not (Test-Path -LiteralPath $AiRepo)) { $AiRepo = Join-Path $siblings "fcc-ai" }
+}
 if (-not $FrontendRepo) { $FrontendRepo = Join-Path $siblings "fcc-frontend" }
 if (-not $Python) { $Python = Join-Path $AiRepo ".venv/Scripts/python.exe" }
 foreach ($path in @($AiRepo,$FrontendRepo,$Python)) {
@@ -62,6 +65,10 @@ function Wait-Service($url) {
 try {
     $started += Start-ServiceProcess "carebridge-ai" $Python @("-m","uvicorn","app.main:app","--host","127.0.0.1","--port","$AiPort","--workers","1") $AiRepo
     Wait-Service "http://127.0.0.1:$AiPort/health"
+    $aiHealth = Invoke-RestMethod -Uri "http://127.0.0.1:$AiPort/health" -TimeoutSec 5
+    if ($aiHealth.carebridge_qa_revision -ne "carebridge.qa.v2") {
+        throw "CareBridge AI qa.v2 is required. Update carebridge-ai before starting this backend."
+    }
     $node = (Get-Command node -ErrorAction Stop).Source
     $started += Start-ServiceProcess "carebridge-backend" $node @("--env-file-if-exists=.env","src/server.js") $backendRepo
     Wait-Service "http://127.0.0.1:$BackendPort/health"

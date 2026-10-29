@@ -9,17 +9,18 @@ import { evidenceSegments, hash } from '../src/carebridge-contract.js';
 import { CognitoAuthService } from '../src/adapters/cognito.js';
 import { workspacePolicy } from '../src/workspace-policy.js';
 import { createLambdaHandler } from '../src/handlers/lambda.js';
+import { fixtureAi } from '../src/testing/fixture-ai.js';
 
 const password = 'Synthetic!123';
 const memo = '식사를 절반 드셨습니다.';
 const clock = () => '2026-10-29T00:00:00.000Z';
 function draft(value) {
-  const checks = ['SOURCE_INTEGRITY','SOURCE_COVERAGE','EVIDENCE_PRESERVED','TRANSLATION_CONSISTENCY','OBSERVATION_GROUNDING','NUMERIC_FACTS_PRESERVED','NEGATION_SIGNAL_PRESERVED','UNCERTAINTY_SIGNAL_PRESERVED','FOLLOW_UP_GROUNDING','NO_IDENTIFIERS_DETECTED','NO_MEDICAL_JUDGMENT','NO_INSTRUCTIONS','SHARING_BLOCKED'];
+  const checks = ['SOURCE_INTEGRITY','SOURCE_COVERAGE','EVIDENCE_PRESERVED','TRANSLATION_CONSISTENCY','OBSERVATION_GROUNDING','NUMERIC_FACTS_PRESERVED','ASSISTANCE_FACT_PRESERVED','NEGATION_SIGNAL_PRESERVED','UNCERTAINTY_SIGNAL_PRESERVED','FOLLOW_UP_GROUNDING','NO_IDENTIFIERS_DETECTED','NO_MEDICAL_JUDGMENT','NO_INSTRUCTIONS','SHARING_BLOCKED'];
   const segments = evidenceSegments(value).map(evidence => ({ text: evidence.quote, evidence }));
   return { schema_version: 'carebridge.v1', id: randomUUID(), status: 'review_required', label: '검토 전 초안 · 공식기록 아님', mode: 'source_preserving', source: {kind:'text',text:value,language:'ko',sha256:hash(value)}, translation:{language:'ko',text:value,segments}, observations:segments.map((s,i)=>({id:`o${i}`,category:'meal',...s})),additional_checks:[],qa:{checks:checks.map(code=>({code,passed:true})),issues:[{code:'HUMAN_REVIEW_REQUIRED',severity:'review',message:'검토 필수'}],requires_human_review:true,external_share_allowed:false} };
 }
 async function fixture(policy = {}, overrides = {}) {
-  const store = new Store(), ai = { enabled: true, draft: async input => draft(input.memo), qa: async candidate => ({status:'review_required',model_checked:true,qa:{...candidate.qa,checks:[...candidate.qa.checks,...['SEMANTIC_NEGATION','SEMANTIC_UNCERTAINTY','SEMANTIC_ADDED_FACTS','SEMANTIC_MEDICAL'].map(code=>({code,passed:true}))]}}), transcribe:async()=>({text:memo,requires_transcript_review:true}), ...overrides };
+  const store = new Store(), ai = { enabled: true, draft: async input => draft(input.memo), qa: candidate => fixtureAi.qa(candidate), transcribe:async()=>({text:memo,requires_transcript_review:true}), ...overrides };
   const auth = new AuthService(store, clock);
   const app = createApp(store, { clock, auth, carebridge: ai, workspacePolicy: { confirmationEnabled: true, transferEnabled: true, recipientChange: 'block_all', ...policy } });
   const call = (u, method, path, body = {}) => app({ token: u?.token, method, path, body });
@@ -214,7 +215,7 @@ test('BE-07 유효한 AI 경고는 제출·확정·별도 공개를 막지 않�
   const {response:s} = await f.submit(); assert.equal(s.status,200);
   const path = `${f.p}/submissions/${s.body.submissionId}`;
   assert.equal((await f.call(f.reviewer,'POST',`${path}/check`,{expectedVersion:1})).status,502);
-  f.ai.qa = async candidate => ({status:'hold',model_checked:true,qa:candidate.qa});
+  f.ai.qa = async candidate => ({status:'hold',model_checked:false,segments:[],qa:candidate.qa});
   assert.equal((await f.call(f.reviewer,'POST',`${path}/check`,{expectedVersion:1})).status,200);
   const confirmed = await f.call(f.reviewer,'POST',`${path}/review`,{expectedVersion:1,decision:'confirm',confirmSource:true,confirmChecks:true});
   assert.equal(confirmed.status,200,JSON.stringify(confirmed)); assert.equal(confirmed.body.status,'confirmed');
@@ -272,7 +273,7 @@ test('BE-03~05 발신 이전 요청 복구·관리 이력 페이지·퇴출된 �
 test('BE-01 Lambda 경로에서도 동일 정책을 적용하고 AI 경고 확정 가능', async () => {
   assert.deepEqual(workspacePolicy({CAREBRIDGE_MULTIPLE_WORKSPACES:'true',CAREBRIDGE_RECIPIENT_CHANGE:'retain'}),{multipleWorkspaces:false,confirmationEnabled:true,transferEnabled:true,recipientChange:'block_all'});
   const f = await fixture(workspacePolicy({})), {response:s} = await f.submit();
-  f.ai.qa=async candidate=>{const qa=structuredClone(candidate.qa);qa.checks[0].passed=false;return {status:'hold',model_checked:true,qa};};
+  f.ai.qa=async candidate=>{const qa=structuredClone(candidate.qa);qa.checks[0].passed=false;return {status:'hold',model_checked:false,segments:[],qa};};
   await f.call(f.reviewer,'POST',`${f.p}/submissions/${s.body.submissionId}/check`,{expectedVersion:1});
   const result = await createLambdaHandler(f.app)({rawPath:`${f.p}/submissions/${s.body.submissionId}/review`,requestContext:{http:{method:'POST'}},headers:{authorization:`Bearer ${f.reviewer.token}`},body:JSON.stringify({expectedVersion:1,decision:'confirm',confirmSource:true,confirmChecks:true})});
   assert.equal(result.statusCode,200);assert.equal(JSON.parse(result.body).status,'confirmed');

@@ -1,4 +1,7 @@
-# Family Care Cloud backend v0.2
+# CareBridge backend
+
+CareBridge 기능의 구현 기준 브랜치는 `develop`입니다.
+[사실 누락 검사·승인 검증·이관 후 실행 안내](docs/FIDELITY_V2.md)를 참고하세요.
 
 API 연동 수정(BE-01~07), 배포 WebSocket 계약 및 검증 범위는 [INTEGRATION_2026-10-29.md](docs/INTEGRATION_2026-10-29.md), 로컬 QA 계정은 [TEST_ACCOUNT.md](docs/TEST_ACCOUNT.md)를 참고하세요.
 
