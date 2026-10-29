@@ -27,7 +27,16 @@ export class CognitoAuthService {
   async send(name, input) {
     try { return await this.client.send(new this.commands[name](input), { abortSignal: AbortSignal.timeout(15000) }); }
     catch (error) {
-      this.logger({ event: 'cognito_error', operation: name, providerCode: error.name, requestId: error.$metadata?.requestId ?? null });
+      const sessionCheck = name === 'GetUserCommand';
+      const refresh = name === 'InitiateAuthCommand' && input.AuthFlow === 'REFRESH_TOKEN_AUTH';
+      const reason = error.name !== 'NotAuthorizedException' ? null
+        : sessionCheck ? (/expired/i.test(error.message) ? 'expired' : /revoked/i.test(error.message) ? 'revoked' : 'invalid')
+        : refresh ? 'refresh_rejected' : 'credentials_rejected';
+      this.logger({ event: 'cognito_error', operation: name, providerCode: error.name, requestId: error.$metadata?.requestId ?? null, ...(reason ? { reason } : {}) });
+      if (reason && (sessionCheck || refresh)) {
+        const code = reason === 'expired' ? 'SESSION_EXPIRED' : reason === 'revoked' ? 'SESSION_REVOKED' : 'SESSION_INVALID';
+        throw authError(401, code, reason === 'expired' ? '로그인 유효시간이 지났습니다. 다시 로그인해 주세요.' : '로그인이 종료되었습니다. 다시 로그인해 주세요.');
+      }
       const [status, code, message] = ERRORS[error.name] ?? [503, 'AUTH_SERVICE_UNAVAILABLE', '인증 서비스에 연결할 수 없습니다. 잠시 후 다시 시도해주세요.'];
       throw authError(status, code, message);
     }
@@ -117,7 +126,18 @@ export class CognitoAuthService {
     const accessToken = response.AuthenticationResult.AccessToken;
     const userId = await this.authenticate(accessToken);
     if (expectedAdminId && userId !== expectedAdminId) throw authError(401, 'INVALID_CREDENTIALS', '이메일 또는 비밀번호가 올바르지 않습니다.');
-    return { accessToken, tokenType: 'Bearer', expiresAt: new Date(Date.parse(this.clock()) + response.AuthenticationResult.ExpiresIn * 1000).toISOString(), user: await this.profile(userId, 'GET') };
+    return this.sessionResult(response.AuthenticationResult, userId);
+  }
+  async sessionResult(result, userId) {
+    return { accessToken: result.AccessToken, tokenType: 'Bearer', expiresAt: new Date(Date.parse(this.clock()) + result.ExpiresIn * 1000).toISOString(), ...(result.RefreshToken ? { refreshToken: result.RefreshToken } : {}), user: await this.profile(userId, 'GET') };
+  }
+  async refresh(body) {
+    fields(body, ['refreshToken']);
+    if (typeof body.refreshToken !== 'string' || !body.refreshToken.trim() || body.refreshToken.length > 16384) fail(400, '로그인 갱신 정보가 필요합니다.');
+    const response = await this.send('InitiateAuthCommand', { ClientId: this.clientId, AuthFlow: 'REFRESH_TOKEN_AUTH', AuthParameters: { REFRESH_TOKEN: body.refreshToken } });
+    if (!response.AuthenticationResult?.AccessToken) throw authError(401, 'SESSION_INVALID', '다시 로그인해 주세요.');
+    const userId = await this.authenticate(response.AuthenticationResult.AccessToken);
+    return this.sessionResult(response.AuthenticationResult, userId);
   }
   async authenticate(token) {
     if (!token || token.length > 8192) fail(401, '로그인이 필요합니다.');

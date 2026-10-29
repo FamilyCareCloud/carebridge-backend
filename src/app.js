@@ -47,7 +47,8 @@ export function createApp(store, { clock = () => new Date().toISOString(), ai = 
         if (!['author', 'reviewer', 'viewer'].includes(body.role)) fail(400, '가입 역할을 선택해 주세요.');
         return { status: 201, body: await auth.register(body) };
       }
-      if (parts[0] === 'auth' && parts.length === 2 && method === 'POST' && ['register', 'login', 'confirm', 'resend-confirmation'].includes(parts[1])) {
+      if (parts[0] === 'auth' && parts.length === 2 && method === 'POST' && ['register', 'login', 'refresh', 'confirm', 'resend-confirmation'].includes(parts[1])) {
+        if (parts[1] === 'refresh' && !auth.refresh) fail(400, '다시 로그인해 주세요.', 'SESSION_REFRESH_NOT_SUPPORTED');
         if (parts[1] === 'confirm' && !auth.confirm) fail(404, '로컬 인증은 별도 확인 코드가 없습니다.');
         if (parts[1] === 'resend-confirmation' && !auth.resend) fail(400, '로컬 인증은 이메일을 발송하지 않습니다.', 'EMAIL_VERIFICATION_NOT_SUPPORTED');
         result = await auth[parts[1] === 'resend-confirmation' ? 'resend' : parts[1]](body); status = parts[1] === 'register' ? 201 : 200;
