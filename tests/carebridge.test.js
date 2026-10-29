@@ -3,11 +3,19 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createApp } from '../src/app.js';
 import { Store } from '../src/store.js';
-import { hash, evidenceSegments, validateReview } from '../src/carebridge-contract.js';
+import { hash, evidenceSegments, validateDraft, validateReview } from '../src/carebridge-contract.js';
+import { fixtureAi } from '../src/testing/fixture-ai.js';
 import { CarebridgeClient } from '../src/adapters/carebridge.js';
 
 const codes=['SOURCE_INTEGRITY','SOURCE_COVERAGE','EVIDENCE_PRESERVED','TRANSLATION_CONSISTENCY','OBSERVATION_GROUNDING','NUMERIC_FACTS_PRESERVED','ASSISTANCE_FACT_PRESERVED','NEGATION_SIGNAL_PRESERVED','UNCERTAINTY_SIGNAL_PRESERVED','FOLLOW_UP_GROUNDING','NO_IDENTIFIERS_DETECTED','NO_MEDICAL_JUDGMENT','NO_INSTRUCTIONS','SHARING_BLOCKED'];
 const semantic=['SEMANTIC_NEGATION','SEMANTIC_UNCERTAINTY','SEMANTIC_ADDED_FACTS','SEMANTIC_MEDICAL','SEMANTIC_OMITTED_FACTS'];
+test('합성 테스트 AI도 구간별 근거와 필수 qa.v2 검사를 반환',async()=>{
+  const memo='식사를 했습니다.\n물을 마셨습니다.';
+  const draft=await fixtureAi.draft({memo});
+  assert.doesNotThrow(()=>validateDraft(draft,memo));
+  const review=await fixtureAi.qa(draft);
+  assert.doesNotThrow(()=>validateReview(review,draft));
+});
 function reviewed(draft) {
   return {status:'review_required',model_checked:true,segments:draft.translation.segments.map(t=>({evidence:t.evidence,checks:semantic.map(code=>({code,passed:true}))})),qa:qa(false,true)};
 }

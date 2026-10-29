@@ -368,7 +368,7 @@ export class WorkspaceService {
       return { candidate, contentHash: hash(content), version: s.version };
     }, { validateReads: true });
     let qa;
-    try { qa = validateReview(await this.ai.qa(snapshot.candidate)); }
+    try { qa = validateReview(await this.ai.qa(snapshot.candidate), snapshot.candidate); }
     catch (error) { if (error.status) throw error; fail(502, '최종본 QA에 실패했습니다.', 'CAREBRIDGE_AI_FAILED'); }
     return this.store.transaction(async tx => {
       const { w, user } = await this.access(tx, userId, id, ['reviewer']);
