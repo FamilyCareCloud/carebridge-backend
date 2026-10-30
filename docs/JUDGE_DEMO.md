@@ -19,6 +19,7 @@
 node scripts/seed-judge-samples.mjs --generate "$HOME/carebridge-judge-private.json"
 # 출력된 원문과 한국어 초안을 대조하여 검토한 뒤 실행
 node scripts/seed-judge-samples.mjs --finalize "$HOME/carebridge-judge-private.json"
+node scripts/seed-judge-samples.mjs --verify "$HOME/carebridge-judge-private.json"
 ```
 
 가상 대상자 가온·나래 2명에 한국어·베트남어 검토 대기 2건, 한국어 보류 1건, 영어 원문의 검토 완료 비공개 1건, 한국어 공개 1건을 준비한다. 확정할 기록은 AI 최종 QA의 모든 검사가 통과하고 보류 이슈가 없어야 한다. 공개 수신자는 심사 열람자 1명만 지정한다. AI 오류·보류 결과는 임의로 통과시키지 않는다.
