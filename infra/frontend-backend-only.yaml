@@ -2,6 +2,9 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: FCC backend - Cognito, HTTP API, Lambda and DynamoDB
 Parameters:
+  AppVersion:
+    Type: String
+    Default: local
   FrontendOrigin:
     Type: String
     Default: http://localhost:5173
@@ -24,6 +27,21 @@ Parameters:
     Default: ''
     NoEcho: true
     Description: Shared secret sent as X-API-Key to the STT service. Leave empty only if the STT service itself requires no key.
+  CarebridgeServiceUrl:
+    Type: String
+    Default: ''
+    Description: Authenticated CareBridge GPU service URL
+  CarebridgeServiceApiKey:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: Shared X-API-Key for CareBridge
+  CarebridgeTimeoutMs:
+    Type: Number
+    Default: 22000
+    MinValue: 1000
+    MaxValue: 24000
+    Description: AI call timeout below the Lambda budget
 Conditions:
   HasCustomEmail: !Not [!Equals [!Ref SesIdentityArn, '']]
 Rules:
@@ -39,6 +57,8 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: pk
@@ -140,9 +160,18 @@ Resources:
       Timeout: 29
       Environment:
         Variables:
+          APP_VERSION: !Ref AppVersion
+          CAREBRIDGE_MULTIPLE_WORKSPACES: 'false'
+          CAREBRIDGE_CONFIRMATION_ENABLED: 'true'
+          CAREBRIDGE_TRANSFER_ENABLED: 'true'
+          CAREBRIDGE_RECIPIENT_CHANGE: block_all
+          WEBSOCKET_URL: !Sub 'wss://${WorkspaceSocket}.execute-api.${AWS::Region}.${AWS::URLSuffix}/live'
           DYNAMODB_TABLE: !Ref Database
           COGNITO_CLIENT_ID: !Ref UserPoolClient
           COGNITO_USER_POOL_ID: !Ref UserPool
+          CAREBRIDGE_SERVICE_URL: !Ref CarebridgeServiceUrl
+          CAREBRIDGE_SERVICE_API_KEY: !Ref CarebridgeServiceApiKey
+          CAREBRIDGE_TIMEOUT_MS: !Ref CarebridgeTimeoutMs
           AI_PROVIDER: local
           STT_SERVICE_URL: !Ref SttServiceUrl
           STT_SERVICE_API_KEY: !Ref SttServiceApiKey
@@ -161,12 +190,110 @@ Resources:
             ApiId: !Ref Api
             Path: /{proxy+}
             Method: ANY
+  WorkspaceSocket:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${AWS::StackName}-workspace-events'
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: '$request.body.action'
+  SocketIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WorkspaceSocket
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Realtime.Arn}/invocations'
+  SocketConnect:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WorkspaceSocket
+      RouteKey: '$connect'
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${SocketIntegration}'
+  SocketDisconnect:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WorkspaceSocket
+      RouteKey: '$disconnect'
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${SocketIntegration}'
+  SocketDefault:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WorkspaceSocket
+      RouteKey: '$default'
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${SocketIntegration}'
+  SocketStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref WorkspaceSocket
+      StageName: live
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 30
+        ThrottlingRateLimit: 15
+  SocketPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Realtime
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WorkspaceSocket}/*'
+  Realtime:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../
+      Handler: src/handlers/websocket.handler
+      Runtime: nodejs22.x
+      MemorySize: 512
+      Timeout: 60
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref Database
+          FRONTEND_ORIGIN: !Ref FrontendOrigin
+          WEBSOCKET_MANAGEMENT_URL: !Sub 'https://${WorkspaceSocket}.execute-api.${AWS::Region}.${AWS::URLSuffix}/live'
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:DeleteItem, dynamodb:ConditionCheckItem]
+              Resource: !GetAtt Database.Arn
+            - Effect: Allow
+              Action: [dynamodb:GetRecords, dynamodb:GetShardIterator, dynamodb:DescribeStream, dynamodb:ListStreams]
+              Resource: !GetAtt Database.StreamArn
+            - Effect: Allow
+              Action: [execute-api:ManageConnections]
+              Resource: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WorkspaceSocket}/live/*/@connections/*'
+      Events:
+        WorkspaceChanges:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt Database.StreamArn
+            StartingPosition: LATEST
+            BatchSize: 10
+            MaximumBatchingWindowInSeconds: 0
+            BisectBatchOnFunctionError: true
+            FunctionResponseTypes: [ReportBatchItemFailures]
+            FilterCriteria:
+              Filters:
+                - Pattern: '{"dynamodb":{"Keys":{"pk":{"S":[{"prefix":"workspace#"},{"prefix":"user#"},{"prefix":"realtime-revoke#"}]}}}}'
+        ExpiredConnections:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 minute)
+  RealtimeLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Realtime}'
+      RetentionInDays: 14
   BackendLogs:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub '/aws/lambda/${Backend}'
       RetentionInDays: 14
 Outputs:
+  WebSocketUrl:
+    Value: !Sub 'wss://${WorkspaceSocket}.execute-api.${AWS::Region}.${AWS::URLSuffix}/live'
   ApiUrl:
     Value: !Sub 'https://${Api}.execute-api.${AWS::Region}.${AWS::URLSuffix}'
   TableName:
@@ -175,4 +302,3 @@ Outputs:
     Value: !Ref UserPool
   UserPoolClientId:
     Value: !Ref UserPoolClient
-

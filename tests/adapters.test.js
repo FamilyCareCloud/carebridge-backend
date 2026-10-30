@@ -160,3 +160,20 @@ test('Bedrock: 코드 펜스 JSON 허용, 검증 실패는 1회 재시도, 타�
   const timeout = scripted([Object.assign(new Error('t'), { name: 'TimeoutError' }), JSON.stringify(good)]);
   await assert.rejects(timeout.ai.classifyCareEvent('식사량 감소')); assert.equal(timeout.calls, 1);
 });
+
+test('DynamoDB 승인 미리보기의 읽기 전용 트랜잭션도 수정·권한 변경 경쟁을 차단', async () => {
+  const f = fakeDynamo();
+  await f.store.transaction(async tx => { await tx.set('note#n', { status:'approved' }); await tx.set('member#u',{role:'family'}); });
+  let release, read;
+  const gate=new Promise(resolve=>release=resolve), started=new Promise(resolve=>read=resolve);
+  const preview=f.store.transaction(async tx=>{
+    const note=await tx.get('note#n'); await tx.get('member#u'); read(); await gate;
+    return note;
+  },{validateReads:true});
+  await started;
+  await f.store.transaction(tx=>tx.set('note#n',{status:'review_required'}));
+  release();
+  await assert.rejects(preview,error=>error.status===409);
+  const checked=f.commands.filter(c=>c instanceof TransactWriteCommand).at(-1);
+  assert.ok(checked.input.TransactItems.every(item=>item.ConditionCheck));
+});

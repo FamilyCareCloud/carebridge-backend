@@ -1,4 +1,11 @@
-# Family Care Cloud backend v0.2
+# CareBridge backend
+
+CareBridge 기능의 구현 기준 브랜치는 `develop`입니다.
+[사실 누락 검사·승인 검증·이관 후 실행 안내](docs/FIDELITY_V2.md)를 참고하세요.
+
+API 연동 수정(BE-01~07), 배포 WebSocket 계약 및 검증 범위는 [INTEGRATION_2026-10-29.md](docs/INTEGRATION_2026-10-29.md), 로컬 QA 계정은 [TEST_ACCOUNT.md](docs/TEST_ACCOUNT.md)를 참고하세요.
+
+CareBridge 기관 업무 v1 로컬 구현은 [WORKSPACE_API.md](docs/WORKSPACE_API.md)를 참고하세요. 고정 역할 가입, 기관 참여 승인, 대상자 순번, 독립 제출·검토, 수신자 지정 공개, 로컬 SSE 계약을 제공합니다. 기존 FCC 가족 그룹과 데이터·권한을 분리하며 미결정 정책은 명시적 설정을 요구합니다.
 
 2026-09-10 설계서 v1.00의 보호자 중심 MVP 백엔드입니다. 가입 → 그룹 생성 → 고령자 등록 → 가족 초대/참여 → 기록 작성 → 일정 관리 → 교대/인수인계 → 인수 확인 흐름을 제공합니다.
 
@@ -300,3 +307,7 @@ pnpm test
 로컬 파일 DB는 단일 프로세스용입니다. 현재 DB 구조는 그룹 단위 원자적 저장을 우선한 소규모 MVP로, 한 그룹 레코드는 350 KB까지입니다. 한도 초과는 413으로 거절하며 기존 데이터는 유지합니다. 장기 운영 전 기록/인수인계의 개별 항목 분리와 페이지네이션이 필요합니다.
 
 회원가입 관련 변경은 Cognito 설정과 Lambda를 함께 업데이트해야 합니다.
+
+## 케어브릿지
+
+메모 작성·다국어 전사/번역·담당자 승인/수정/보류·승인된 가족 미리보기 전체 흐름은 [CAREBRIDGE.md](docs/CAREBRIDGE.md)에 정리했습니다.

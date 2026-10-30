@@ -1,6 +1,6 @@
 # API 계약 v0.2
 
-`Authorization: Bearer <accessToken>` 인증. `/health`, `/auth/register`, `/auth/login`, `/auth/confirm`, `/auth/resend-confirmation`만 공개입니다. 기존 DEV_TOKEN 및 userId 헤더 방식은 제거했습니다. 요청은 JSON 객체, 오류는 `{error, code}`입니다. 작성자·소유자·생성 ID를 요청에서 위조할 수 없습니다.
+`Authorization: Bearer <accessToken>` 인증. `/health`, `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/confirm`, `/auth/resend-confirmation`은 공개 경로이며 refresh에는 별도 Cognito refresh credential이 필요합니다. 기존 DEV_TOKEN 및 userId 헤더 방식은 제거했습니다. 요청은 JSON 객체, 오류는 `{error, code}`입니다. 작성자·소유자·생성 ID를 요청에서 위조할 수 없습니다.
 
 로컬 로그인 토큰은 8시간, Cognito는 템플릿 기준 1시간 유효합니다. 로그아웃은 로컬 현재 세션 폐기, Cognito 계정의 전체 세션 로그아웃입니다. Cognito에서는 가입 후 이메일 코드 확인이 필요합니다. 로컬 confirm은 사용하지 않습니다.
 
@@ -11,7 +11,8 @@
 | GET | /health | 상태 확인 |
 | POST | /auth/register | email, password(8자 이상, 특수문자 최소 1개), name → 201 |
 | POST | /auth/confirm | email, code; Cognito 이메일 확인 |
-| POST | /auth/login | email, password → accessToken, tokenType, expiresAt, user |
+| POST | /auth/login | email, password → accessToken, tokenType, expiresAt, user, refreshToken(Cognito) |
+| POST | /auth/refresh | refreshToken → 새 accessToken, expiresAt, user; Cognito 전용 공개 인증 경로 |
 | POST | /auth/logout | 빈 객체 |
 | GET/PATCH | /me | 프로필 조회/수정; 수정은 name |
 | GET/POST | /groups | 내 그룹 목록/생성; name, 선택 elderName |
